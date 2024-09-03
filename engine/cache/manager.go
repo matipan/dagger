@@ -30,11 +30,19 @@ type manager struct {
 	runtimeConfig Config
 	localCache    solver.CacheManager
 
-	mu                 sync.RWMutex
-	inner              solver.CacheManager
-	startCloseCh       chan struct{} // closed when shutdown should start
-	doneCh             chan struct{} // closed when shutdown is complete
-	stopCacheMountSync func(context.Context) error
+	mu           sync.RWMutex
+	inner        solver.CacheManager
+	startCloseCh chan struct{} // closed when shutdown should start
+	doneCh       chan struct{} // closed when shutdown is complete
+
+	cacheMountsInit   sync.Once
+	syncedCacheMounts map[string]*syncedCacheMount
+	seenCacheMounts   *sync.Map
+}
+
+type syncedCacheMount struct {
+	init  sync.Once
+	mount SyncedCacheMountConfig
 }
 
 type ManagerConfig struct {
@@ -429,9 +437,7 @@ func (m *manager) Import(ctx context.Context) error {
 // Close will block until the final export has finished or ctx is canceled.
 func (m *manager) Close(ctx context.Context) (rerr error) {
 	close(m.startCloseCh)
-	if m.stopCacheMountSync != nil {
-		rerr = m.stopCacheMountSync(ctx)
-	}
+	m.syncSeenCacheMounts(ctx)
 	select {
 	case <-m.doneCh:
 	case <-ctx.Done():
@@ -510,7 +516,7 @@ func (m *manager) descriptorProviderPair(layerMetadata remotecache.CacheLayer) (
 
 type Manager interface {
 	solver.CacheManager
-	StartCacheMountSynchronization(context.Context) error
+	SynchronizeCacheMounts(context.Context, []string) error
 	ReleaseUnreferenced(context.Context) error
 	Close(context.Context) error
 }
@@ -521,7 +527,7 @@ type defaultCacheManager struct {
 
 var _ Manager = defaultCacheManager{}
 
-func (defaultCacheManager) StartCacheMountSynchronization(ctx context.Context) error {
+func (defaultCacheManager) SynchronizeCacheMounts(ctx context.Context, _ []string) error {
 	return nil
 }
 
