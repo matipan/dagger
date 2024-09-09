@@ -53,6 +53,7 @@ type ManagerConfig struct {
 	ServiceURL   string
 	Token        string
 	EngineID     string
+	SyncOnBoot   bool
 }
 
 const (
@@ -112,6 +113,20 @@ func NewManager(ctx context.Context, managerConfig ManagerConfig) (Manager, erro
 		// the first import failed, but we can continue with just the local cache to start and retry
 		// importing in the background in the loop below
 		bklog.G(ctx).WithError(err).Error("failed to import cache at startup")
+	}
+
+	// fetch the tenant's cache mount configuration with the list of cache mounts
+	m.initSyncedCacheMounts(ctx)
+
+	// if SyncOnBoot is enabled then we synchronize all cache mounts on boot
+	if managerConfig.SyncOnBoot {
+		bklog.G(ctx).Debug("synchronizing cache mounts on boot")
+		start := time.Now()
+		if err := m.syncAllCacheMounts(ctx); err != nil {
+			bklog.G(ctx).WithError(err).Warn("(optional) cache mount synchronization on boot failed")
+		} else {
+			bklog.G(ctx).Debugf("finish cache mount synchronization in %s", time.Since(start))
+		}
 	}
 
 	// loop for periodic async imports
@@ -516,7 +531,7 @@ func (m *manager) descriptorProviderPair(layerMetadata remotecache.CacheLayer) (
 
 type Manager interface {
 	solver.CacheManager
-	SynchronizeCacheMounts(context.Context, []string) error
+	DownloadCacheMounts(context.Context, []string) error
 	ReleaseUnreferenced(context.Context) error
 	Close(context.Context) error
 }
@@ -527,7 +542,7 @@ type defaultCacheManager struct {
 
 var _ Manager = defaultCacheManager{}
 
-func (defaultCacheManager) SynchronizeCacheMounts(ctx context.Context, _ []string) error {
+func (defaultCacheManager) DownloadCacheMounts(ctx context.Context, _ []string) error {
 	return nil
 }
 
