@@ -75,7 +75,7 @@ func (d *daggerCloudDriver) Available(ctx context.Context) (bool, error) {
 	return true, nil // assume always available
 }
 
-func (d *daggerCloudDriver) Provision(ctx context.Context, _ *url.URL, opts *DriverOpts) (Connector, error) {
+func (d *daggerCloudDriver) Provision(ctx context.Context, u *url.URL, opts *DriverOpts) (Connector, error) {
 	client, err := cloud.NewClient(ctx)
 	if err != nil {
 		return nil, errors.New("please run `dagger login <org>` first or configure a DAGGER_CLOUD_TOKEN")
@@ -91,7 +91,12 @@ func (d *daggerCloudDriver) Provision(ctx context.Context, _ *url.URL, opts *Dri
 		execCmd = opts.ExecCmd
 	}
 
-	engineSpec, err := client.Engine(ctx, cloud.EngineRequest{Module: module, Function: function, ExecCmd: execCmd})
+	engineSpec, err := client.Engine(ctx, cloud.EngineRequest{
+		UniqueTag: u.Query().Get("unique-tag"),
+		Module:    module,
+		Function:  function,
+		ExecCmd:   execCmd,
+	})
 	if err != nil {
 		if errors.Is(err, cloud.ErrNoOrg) {
 			return nil, errors.New("please associate this Engine with an org by running `dagger login <org>")
