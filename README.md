@@ -1,6 +1,6 @@
 ## Dagger: a better way to ship
 
-Dagger is a platform for automating software delivery. It can build, test and ship any codebase, reliably and at scale.
+Dagger is a plform for automating software delivery. It can build, test and ship any codebase, reliably and at scale.
 
 Dagger runs locally, in your CI server, or directly in the cloud. 
 
