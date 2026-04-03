@@ -108,6 +108,7 @@ module.exports = {
       collapsible: true,
       collapsed: false,
       items: [
+        "using-dagger/artifacts",
         "using-dagger/checking",
         "using-dagger/generating",
         "using-dagger/changesets",
