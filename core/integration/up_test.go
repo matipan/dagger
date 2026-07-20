@@ -100,17 +100,15 @@ func (UpSuite) TestUpDirectSDK(ctx context.Context, t *testctx.T) {
 	}
 }
 
-func (UpSuite) TestUpEnvServices(ctx context.Context, t *testctx.T) {
+func (UpSuite) TestUpPlanVisibleFromModule(ctx context.Context, t *testctx.T) {
 	c := connect(ctx, t)
 	modGen, err := upTestEnv(t, c)
 	require.NoError(t, err)
 	modGen = modGen.WithWorkdir("hello-with-services")
 
-	// Call the module's CurrentEnvServices function which queries
-	// dag.CurrentEnv().Services().List() to verify services are visible
-	// from within the module execution context.
+	// Verify the module can inspect the same UP plan used by the CLI.
 	out, err := modGen.
-		With(daggerExec("call", "current-env-services")).
+		With(daggerExec("call", "current-plan-services")).
 		CombinedOutput(ctx)
 	require.NoError(t, err)
 	require.Contains(t, out, "web")
@@ -254,11 +252,11 @@ source = "../service-ref-consumer"
 	})
 
 	t.Run("service ref via settings under check", func(ctx context.Context, t *testctx.T) {
-		// Checks run through the ModTree path (standalone per-module dagql
-		// servers), not the caller's session schema, so settings-wired
-		// constructor args must resolve against the schema served to the main
-		// client (see UserDefault.Value in core/modfunc.go). The consumer's
-		// check-service check passes only when the wired service arrived.
+		// Check actions execute through module DAGQL servers, not the caller's
+		// session schema, so settings-wired constructor args must resolve
+		// against the schema served to the main client (see UserDefault.Value in
+		// core/modfunc.go). The consumer's check-service check passes only when
+		// the wired service arrived.
 		ctr := modGen.
 			WithWorkdir("app").
 			WithNewFile("dagger.toml", `[modules.hello-with-services]
@@ -508,9 +506,9 @@ up.skip = ["redis"]
 
 	out, err := ctr.With(daggerExec("up", "-l")).CombinedOutput(ctx)
 	require.NoError(t, err)
-	require.Contains(t, out, "hello-with-services:web")
-	require.NotContains(t, out, "hello-with-services:redis")
-	require.Contains(t, out, "hello-with-services:infra:database")
+	require.Contains(t, out, "web")
+	require.NotContains(t, out, "redis")
+	require.Contains(t, out, "infra:database")
 }
 
 func (UpSuite) TestWorkspaceUpPortMapping(ctx context.Context, t *testctx.T) {
@@ -561,9 +559,9 @@ source = "../%s"
 				With(daggerExec("up", "-l")).
 				CombinedOutput(ctx)
 			require.NoError(t, err)
-			require.Contains(t, out, tc.path+":web")
-			require.Contains(t, out, tc.path+":redis")
-			require.Contains(t, out, tc.path+":infra:database")
+			require.Contains(t, out, "web")
+			require.Contains(t, out, "redis")
+			require.Contains(t, out, "infra:database")
 		})
 	}
 }

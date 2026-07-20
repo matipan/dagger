@@ -208,9 +208,9 @@ func demandLoadInstalledModule(ctx context.Context, name string) (srv *dagql.Ser
 	// module, so a load failure is that resolution's real error. This does not
 	// undo best-effort operations like `dagger generate`: their own initial
 	// best-effort pass records a failed module, EnsureWorkspaceModules returns
-	// the recorded error here without reloading, and ModTree runs nodes
-	// without fail-fast — so only the node that genuinely needs the broken
-	// module fails, and repair generators keep running.
+	// the recorded error here without reloading, and the plan runs independent
+	// nodes without fail-fast — so only the action that genuinely needs the
+	// broken module fails, and repair generators keep running.
 	if _, err := q.Server.EnsureWorkspaceModules(ctx, []string{name}, false); err != nil {
 		return nil, true, err
 	}

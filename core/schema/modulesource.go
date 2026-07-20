@@ -3088,25 +3088,31 @@ func (s *moduleSourceSchema) generateOneLocalDependency(
 	if err != nil {
 		return dagql.ObjectResult[*core.Changeset]{}, fmt.Errorf("scope workspace: %w", err)
 	}
-	wsDID, err := wsD.ID()
-	if err != nil {
-		return dagql.ObjectResult[*core.Changeset]{}, err
-	}
-
-	// Scope generation to the owning SDK's generator (include) and hand it the
-	// dep-scoped workspace (withWorkspace). filterGeneratorsByInclude matches the
-	// bare module name, exactly like `dagger generate <sdk-name>`.
+	// Scope generation to the owning SDK artifact. The plan carries wsD through
+	// materialization so action evaluation injects this exact scoped/overlaid
+	// workspace into the SDK generator.
 	var depChanges dagql.ObjectResult[*core.Changeset]
-	if err := dag.Select(ctx, workspace, &depChanges,
+	if err := dag.Select(ctx, wsD, &depChanges,
+		dagql.Selector{Field: "artifacts"},
 		dagql.Selector{
-			Field: "generators",
+			Field: "filterCoordinates",
 			Args: []dagql.NamedInput{
-				{Name: "include", Value: dagql.Opt(dagql.ArrayInput[dagql.String]{dagql.String(owner)})},
-				{Name: "withWorkspace", Value: dagql.Opt(dagql.NewID[*core.Workspace](wsDID))},
+				{Name: "dimension", Value: dagql.String(core.ArtifactTypeDimension)},
+				{Name: "values", Value: dagql.ArrayInput[dagql.String]{dagql.String(owner)}},
 			},
 		},
-		dagql.Selector{Field: "run"},
-		dagql.Selector{Field: "changes"},
+		dagql.Selector{
+			Field: "plan",
+			Args: []dagql.NamedInput{
+				{Name: "verb", Value: core.VerbGenerate},
+			},
+		},
+		dagql.Selector{
+			Field: "changes",
+			Args: []dagql.NamedInput{
+				{Name: "onConflict", Value: FailEarlyOnMergeConflicts},
+			},
+		},
 	); err != nil {
 		return dagql.ObjectResult[*core.Changeset]{}, err
 	}

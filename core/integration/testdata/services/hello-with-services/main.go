@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"sort"
+	"strings"
 
 	"dagger/hello-with-services/internal/dagger"
 )
@@ -28,19 +29,33 @@ func (m *HelloWithServices) Redis() *dagger.Service {
 		AsService()
 }
 
-// Returns the names of all services visible from the current environment.
-func (m *HelloWithServices) CurrentEnvServices(ctx context.Context) ([]string, error) {
-	services, err := dag.CurrentEnv().Services().List(ctx)
+// Returns the names of all services visible in the current UP plan.
+func (m *HelloWithServices) CurrentPlanServices(ctx context.Context, ws *dagger.Workspace) ([]string, error) {
+	actions, err := ws.
+		Artifacts().
+		Plan(dagger.VerbUp).
+		Nodes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(services))
-	for _, svc := range services {
-		name, err := svc.Name(ctx)
+	names := make([]string, 0, len(actions))
+	for _, action := range actions {
+		path, err := action.FunctionPath(ctx)
 		if err != nil {
 			return nil, err
 		}
-		names = append(names, name)
+		targets, err := action.Target().Items(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if len(targets) != 1 {
+			continue
+		}
+		coordinates, err := targets[0].Coordinates(ctx)
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, strings.Join(append(coordinates, path...), ":"))
 	}
 	sort.Strings(names)
 	return names, nil

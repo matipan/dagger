@@ -51,6 +51,39 @@ directive @sourceMap(module: String!, filename: String!, line: Int!, column: Int
 """Indicates that this function returns a service for dagger up."""
 directive @up on FIELD_DEFINITION
 
+"""One exact artifact lifecycle invocation."""
+type Action implements Node {
+  """Actions that must complete before this action."""
+  after: [ID!]!
+
+  """Whether this action was compiled for a collection as one batch."""
+  collectionBatched: Boolean!
+
+  """The exact artifact-relative function path."""
+  functionPath: [String!]!
+
+  """A unique identifier for this Action."""
+  id: ID!
+
+  """Execute this action and wait for completion."""
+  run: Void
+
+  """The artifact targeted by this action."""
+  target: Artifacts!
+
+  """The lifecycle operation performed by this action."""
+  verb: Verb!
+
+  """Return this action with additional dependencies."""
+  withAfter(
+    """Actions that must complete first."""
+    actions: [ID!]! @expectedType(name: "Action")
+  ): Action!
+}
+
+"""A unique identifier for an object."""
+scalar ActionID
+
 """
 A standardized address to load containers, directories, secrets, and other
 object types. Address format depends on the type, and is validated at type
@@ -91,21 +124,120 @@ type Address implements Node {
 """A unique identifier for an object."""
 scalar AddressID
 
+"""One artifact in a workspace."""
+type Artifact implements Node {
+  """Select one exact lifecycle action on this artifact."""
+  action(
+    """The lifecycle operation."""
+    verb: Verb!
+
+    """The exact artifact-relative function path."""
+    functionPath: [String!]!
+  ): Action!
+
+  """Discover lifecycle actions rooted at this artifact."""
+  actions(
+    """Only return actions for these lifecycle operations."""
+    verbs: [Verb!] = []
+  ): [Action!]!
+
+  """Look up this artifact's coordinate for one dimension."""
+  coordinate(
+    """The dimension name."""
+    name: String!
+  ): String
+
+  """Ordered coordinate row for this artifact."""
+  coordinates: [String]!
+
+  """A unique identifier for this Artifact."""
+  id: ID!
+
+  """The Artifacts scope that produced this row."""
+  scope: Artifacts!
+}
+
+"""A filterable axis of the artifact graph."""
+type ArtifactDimension implements Node {
+  """A unique identifier for this ArtifactDimension."""
+  id: ID!
+
+  """The type used to parse and validate dimension keys."""
+  keyType: TypeDef!
+
+  """The dimension name used by filters and CLI flags."""
+  name: String!
+}
+
+"""A unique identifier for an object."""
+scalar ArtifactDimensionID
+
+"""A unique identifier for an object."""
+scalar ArtifactID
+
+"""A scoped, filterable view over workspace artifacts."""
+type Artifacts implements Node {
+  """Ordered filterable dimensions for this scope."""
+  dimensions: [ArtifactDimension!]!
+
+  """Keep artifacts whose coordinate matches one of the given values."""
+  filterCoordinates(
+    """The dimension to filter by."""
+    dimension: String!
+
+    """The accepted coordinate values."""
+    values: [String!]!
+  ): Artifacts!
+
+  """Keep artifacts with a non-null coordinate for the given dimension."""
+  filterDimension(
+    """The dimension to filter by."""
+    dimension: String!
+  ): Artifacts!
+
+  """A unique identifier for this Artifacts."""
+  id: ID!
+
+  """Artifacts matching the current filters."""
+  items: [Artifact!]!
+
+  """Compile matching artifact actions into an execution plan."""
+  plan(
+    """The lifecycle operation to compile."""
+    verb: Verb!
+
+    """Only include matching artifact-relative function paths."""
+    include: [FunctionPattern!] = []
+
+    """Exclude matching artifact-relative function paths."""
+    exclude: [FunctionPattern!] = []
+  ): Plan!
+}
+
+"""A unique identifier for an object."""
+scalar ArtifactsID
+
 type Binding implements Node {
+  """Retrieve the binding value, as type Action"""
+  asAction: Action!
+
   """Retrieve the binding value, as type Address"""
   asAddress: Address!
+
+  """Retrieve the binding value, as type Artifact"""
+  asArtifact: Artifact!
+
+  """Retrieve the binding value, as type ArtifactDimension"""
+  asArtifactDimension: ArtifactDimension!
+
+  """Retrieve the binding value, as type Artifacts"""
+  asArtifacts: Artifacts!
 
   """Retrieve the binding value, as type CacheVolume"""
   asCacheVolume: CacheVolume!
 
   """Retrieve the binding value, as type Changeset"""
   asChangeset: Changeset!
-
-  """Retrieve the binding value, as type Check"""
-  asCheck: Check!
-
-  """Retrieve the binding value, as type CheckGroup"""
-  asCheckGroup: CheckGroup!
 
   """Retrieve the binding value, as type Cloud"""
   asCloud: Cloud!
@@ -128,12 +260,6 @@ type Binding implements Node {
   """Retrieve the binding value, as type File"""
   asFile: File!
 
-  """Retrieve the binding value, as type Generator"""
-  asGenerator: Generator!
-
-  """Retrieve the binding value, as type GeneratorGroup"""
-  asGeneratorGroup: GeneratorGroup!
-
   """Retrieve the binding value, as type GitRef"""
   asGitRef: GitRef!
 
@@ -151,6 +277,9 @@ type Binding implements Node {
 
   """Retrieve the binding value, as type ModuleSource"""
   asModuleSource: ModuleSource!
+
+  """Retrieve the binding value, as type Plan"""
+  asPlan: Plan!
 
   """Retrieve the binding value, as type SearchResult"""
   asSearchResult: SearchResult!
@@ -172,12 +301,6 @@ type Binding implements Node {
 
   """Returns the binding's string value"""
   asString: String
-
-  """Retrieve the binding value, as type Up"""
-  asUp: Up!
-
-  """Retrieve the binding value, as type UpGroup"""
-  asUpGroup: UpGroup!
 
   """Retrieve the binding value, as type Workspace"""
   asWorkspace: Workspace!
@@ -333,61 +456,6 @@ enum ChangesetsMergeConflict {
   """Attempt the octopus merge and fail if git merge fails due to conflicts"""
   FAIL
 }
-
-type Check implements Node {
-  """Whether the check completed"""
-  completed: Boolean!
-
-  """The description of the check"""
-  description: String!
-
-  """If the check failed, this is the error"""
-  error: Error
-
-  """A unique identifier for this Check."""
-  id: ID!
-
-  """Return the fully qualified name of the check"""
-  name: String!
-
-  """The original module in which the check has been defined"""
-  originalModule: Module!
-
-  """Whether the check passed"""
-  passed: Boolean!
-
-  """The path of the check within its module"""
-  path: [String!]!
-
-  """An emoji representing the result of the check"""
-  resultEmoji: String!
-
-  """Execute the check"""
-  run: Check!
-}
-
-type CheckGroup implements Node {
-  """A unique identifier for this CheckGroup."""
-  id: ID!
-
-  """Return a list of individual checks and their details"""
-  list: [Check!]!
-
-  """Generate a markdown report"""
-  report: File!
-
-  """Execute all selected checks"""
-  run(
-    """If true, stop running checks as soon as any check fails."""
-    failFast: Boolean
-  ): CheckGroup!
-}
-
-"""A unique identifier for an object."""
-scalar CheckGroupID
-
-"""A unique identifier for an object."""
-scalar CheckID
 
 """Dagger Cloud configuration and state"""
 type Cloud implements Node {
@@ -1637,12 +1705,6 @@ type CurrentModule implements Node {
   """
   generatedContextDirectory: Directory!
 
-  """Return all generators defined by the module"""
-  generators(
-    """Only include generators matching the specified patterns"""
-    include: [String!]
-  ): GeneratorGroup! @experimental(reason: "This API is highly experimental and may be removed or replaced entirely.")
-
   """A unique identifier for this CurrentModule."""
   id: ID!
 
@@ -2348,20 +2410,6 @@ type EnumValueTypeDef implements Node {
 scalar EnumValueTypeDefID
 
 type Env implements Node {
-  """
-  Return the check with the given name from the installed modules. Must match exactly one check.
-  """
-  check(
-    """The name of the check to retrieve"""
-    name: String!
-  ): Check! @experimental(reason: "Checks API is highly experimental and may be removed or replaced entirely.")
-
-  """Return all checks defined by the installed modules"""
-  checks(
-    """Only include checks matching the specified patterns"""
-    include: [String!]
-  ): CheckGroup! @experimental(reason: "Checks API is highly experimental and may be removed or replaced entirely.")
-
   """A unique identifier for this Env."""
   id: ID!
 
@@ -2377,11 +2425,26 @@ type Env implements Node {
   """Returns all declared output bindings for the environment"""
   outputs: [Binding!]!
 
-  """Return all services defined by the installed modules"""
-  services(
-    """Only include services matching the specified patterns"""
-    include: [String!]
-  ): UpGroup! @experimental(reason: "Services API is highly experimental and may be removed or replaced entirely.")
+  """Create or update a binding of type Action in the environment"""
+  withActionInput(
+    """The name of the binding"""
+    name: String!
+
+    """The Action value to assign to the binding"""
+    value: ID! @expectedType(name: "Action")
+
+    """The purpose of the input"""
+    description: String!
+  ): Env!
+
+  """Declare a desired Action output to be assigned in the environment"""
+  withActionOutput(
+    """The name of the binding"""
+    name: String!
+
+    """A description of the desired value of the binding"""
+    description: String!
+  ): Env!
 
   """Create or update a binding of type Address in the environment"""
   withAddressInput(
@@ -2397,6 +2460,73 @@ type Env implements Node {
 
   """Declare a desired Address output to be assigned in the environment"""
   withAddressOutput(
+    """The name of the binding"""
+    name: String!
+
+    """A description of the desired value of the binding"""
+    description: String!
+  ): Env!
+
+  """
+  Create or update a binding of type ArtifactDimension in the environment
+  """
+  withArtifactDimensionInput(
+    """The name of the binding"""
+    name: String!
+
+    """The ArtifactDimension value to assign to the binding"""
+    value: ID! @expectedType(name: "ArtifactDimension")
+
+    """The purpose of the input"""
+    description: String!
+  ): Env!
+
+  """
+  Declare a desired ArtifactDimension output to be assigned in the environment
+  """
+  withArtifactDimensionOutput(
+    """The name of the binding"""
+    name: String!
+
+    """A description of the desired value of the binding"""
+    description: String!
+  ): Env!
+
+  """Create or update a binding of type Artifact in the environment"""
+  withArtifactInput(
+    """The name of the binding"""
+    name: String!
+
+    """The Artifact value to assign to the binding"""
+    value: ID! @expectedType(name: "Artifact")
+
+    """The purpose of the input"""
+    description: String!
+  ): Env!
+
+  """Declare a desired Artifact output to be assigned in the environment"""
+  withArtifactOutput(
+    """The name of the binding"""
+    name: String!
+
+    """A description of the desired value of the binding"""
+    description: String!
+  ): Env!
+
+  """Create or update a binding of type Artifacts in the environment"""
+  withArtifactsInput(
+    """The name of the binding"""
+    name: String!
+
+    """The Artifacts value to assign to the binding"""
+    value: ID! @expectedType(name: "Artifacts")
+
+    """The purpose of the input"""
+    description: String!
+  ): Env!
+
+  """Declare a desired Artifacts output to be assigned in the environment"""
+  withArtifactsOutput(
     """The name of the binding"""
     name: String!
 
@@ -2439,48 +2569,6 @@ type Env implements Node {
 
   """Declare a desired Changeset output to be assigned in the environment"""
   withChangesetOutput(
-    """The name of the binding"""
-    name: String!
-
-    """A description of the desired value of the binding"""
-    description: String!
-  ): Env!
-
-  """Create or update a binding of type CheckGroup in the environment"""
-  withCheckGroupInput(
-    """The name of the binding"""
-    name: String!
-
-    """The CheckGroup value to assign to the binding"""
-    value: ID! @expectedType(name: "CheckGroup")
-
-    """The purpose of the input"""
-    description: String!
-  ): Env!
-
-  """Declare a desired CheckGroup output to be assigned in the environment"""
-  withCheckGroupOutput(
-    """The name of the binding"""
-    name: String!
-
-    """A description of the desired value of the binding"""
-    description: String!
-  ): Env!
-
-  """Create or update a binding of type Check in the environment"""
-  withCheckInput(
-    """The name of the binding"""
-    name: String!
-
-    """The Check value to assign to the binding"""
-    value: ID! @expectedType(name: "Check")
-
-    """The purpose of the input"""
-    description: String!
-  ): Env!
-
-  """Declare a desired Check output to be assigned in the environment"""
-  withCheckOutput(
     """The name of the binding"""
     name: String!
 
@@ -2642,50 +2730,6 @@ type Env implements Node {
     description: String!
   ): Env!
 
-  """Create or update a binding of type GeneratorGroup in the environment"""
-  withGeneratorGroupInput(
-    """The name of the binding"""
-    name: String!
-
-    """The GeneratorGroup value to assign to the binding"""
-    value: ID! @expectedType(name: "GeneratorGroup")
-
-    """The purpose of the input"""
-    description: String!
-  ): Env!
-
-  """
-  Declare a desired GeneratorGroup output to be assigned in the environment
-  """
-  withGeneratorGroupOutput(
-    """The name of the binding"""
-    name: String!
-
-    """A description of the desired value of the binding"""
-    description: String!
-  ): Env!
-
-  """Create or update a binding of type Generator in the environment"""
-  withGeneratorInput(
-    """The name of the binding"""
-    name: String!
-
-    """The Generator value to assign to the binding"""
-    value: ID! @expectedType(name: "Generator")
-
-    """The purpose of the input"""
-    description: String!
-  ): Env!
-
-  """Declare a desired Generator output to be assigned in the environment"""
-  withGeneratorOutput(
-    """The name of the binding"""
-    name: String!
-
-    """A description of the desired value of the binding"""
-    description: String!
-  ): Env!
-
   """Create or update a binding of type GitRef in the environment"""
   withGitRefInput(
     """The name of the binding"""
@@ -2827,6 +2871,27 @@ type Env implements Node {
   Declare a desired ModuleSource output to be assigned in the environment
   """
   withModuleSourceOutput(
+    """The name of the binding"""
+    name: String!
+
+    """A description of the desired value of the binding"""
+    description: String!
+  ): Env!
+
+  """Create or update a binding of type Plan in the environment"""
+  withPlanInput(
+    """The name of the binding"""
+    name: String!
+
+    """The Plan value to assign to the binding"""
+    value: ID! @expectedType(name: "Plan")
+
+    """The purpose of the input"""
+    description: String!
+  ): Env!
+
+  """Declare a desired Plan output to be assigned in the environment"""
+  withPlanOutput(
     """The name of the binding"""
     name: String!
 
@@ -2982,48 +3047,6 @@ type Env implements Node {
     name: String!
 
     """The description of the output"""
-    description: String!
-  ): Env!
-
-  """Create or update a binding of type UpGroup in the environment"""
-  withUpGroupInput(
-    """The name of the binding"""
-    name: String!
-
-    """The UpGroup value to assign to the binding"""
-    value: ID! @expectedType(name: "UpGroup")
-
-    """The purpose of the input"""
-    description: String!
-  ): Env!
-
-  """Declare a desired UpGroup output to be assigned in the environment"""
-  withUpGroupOutput(
-    """The name of the binding"""
-    name: String!
-
-    """A description of the desired value of the binding"""
-    description: String!
-  ): Env!
-
-  """Create or update a binding of type Up in the environment"""
-  withUpInput(
-    """The name of the binding"""
-    name: String!
-
-    """The Up value to assign to the binding"""
-    value: ID! @expectedType(name: "Up")
-
-    """The purpose of the input"""
-    description: String!
-  ): Env!
-
-  """Declare a desired Up output to be assigned in the environment"""
-  withUpOutput(
-    """The name of the binding"""
-    name: String!
-
-    """A description of the desired value of the binding"""
     description: String!
   ): Env!
 
@@ -3618,6 +3641,9 @@ scalar FunctionCallID
 """A unique identifier for an object."""
 scalar FunctionID
 
+"""A glob pattern matching artifact-relative function paths."""
+scalar FunctionPattern
+
 """The result of running an SDK's codegen."""
 type GeneratedCode implements Node {
   """The directory containing the generated code."""
@@ -3643,69 +3669,6 @@ type GeneratedCode implements Node {
 
 """A unique identifier for an object."""
 scalar GeneratedCodeID
-
-type Generator implements Node {
-  """The generated changeset from the last run"""
-  changes: Changeset!
-
-  """Whether the generator complete"""
-  completed: Boolean!
-
-  """Return the description of the generator"""
-  description: String!
-
-  """A unique identifier for this Generator."""
-  id: ID!
-
-  """Whether changeset from the last generator run is empty or not"""
-  isEmpty: Boolean!
-
-  """Return the fully qualified name of the generator"""
-  name: String!
-
-  """The original module in which the generator has been defined"""
-  originalModule: Module!
-
-  """The path of the generator within its module"""
-  path: [String!]!
-
-  """Execute the generator"""
-  run: Generator!
-}
-
-type GeneratorGroup implements Node {
-  """
-  The combined changes from the last run of the generators
-
-  If any conflict occurs, for instance if the same file is modified by multiple
-  generators, or if a file is both modified and deleted, an error is raised and
-  the merge of the changesets will failed.
-
-  Set 'continueOnConflicts' flag to force to merge the changes in a 'last write wins' strategy.
-  """
-  changes(
-    """Strategy to apply on conflicts between generators"""
-    onConflict: ChangesetsMergeConflict = FAIL_EARLY
-  ): Changeset!
-
-  """A unique identifier for this GeneratorGroup."""
-  id: ID!
-
-  """Whether the generated changeset from the last run is empty or not"""
-  isEmpty: Boolean!
-
-  """Return a list of individual generators and their details"""
-  list: [Generator!]!
-
-  """Execute all selected generators"""
-  run: GeneratorGroup!
-}
-
-"""A unique identifier for an object."""
-scalar GeneratorGroupID
-
-"""A unique identifier for an object."""
-scalar GeneratorID
 
 """A git ref (tag, branch, or commit)."""
 type GitRef implements Node {
@@ -4288,20 +4251,6 @@ scalar ListTypeDefID
 
 """A Dagger module."""
 type Module implements Node & Syncer {
-  """
-  Return the check defined by the module with the given name. Must match to exactly one check.
-  """
-  check(
-    """The name of the check to retrieve"""
-    name: String!
-  ): Check! @experimental(reason: "This API is highly experimental and may be removed or replaced entirely.")
-
-  """Return all checks defined by the module"""
-  checks(
-    """Only include checks matching the specified patterns"""
-    include: [String!]
-  ): CheckGroup! @experimental(reason: "This API is highly experimental and may be removed or replaced entirely.")
-
   """The dependencies of the module."""
   dependencies: [Module!]!
 
@@ -4315,20 +4264,6 @@ type Module implements Node & Syncer {
   The generated files and directories made on top of the module source's context directory.
   """
   generatedContextDirectory: Directory!
-
-  """
-  Return the generator defined by the module with the given name. Must match to exactly one generator.
-  """
-  generator(
-    """The name of the generator to retrieve"""
-    name: String!
-  ): Generator! @experimental(reason: "This API is highly experimental and may be removed or replaced entirely.")
-
-  """Return all generators defined by the module"""
-  generators(
-    """Only include generators matching the specified patterns"""
-    include: [String!]
-  ): GeneratorGroup! @experimental(reason: "This API is highly experimental and may be removed or replaced entirely.")
 
   """A unique identifier for this Module."""
   id: ID!
@@ -4375,12 +4310,6 @@ type Module implements Node & Syncer {
     """
     entrypoint: Boolean
   ): Void
-
-  """Return all services defined by the module"""
-  services(
-    """Only include services matching the specified patterns"""
-    include: [String!]
-  ): UpGroup! @experimental(reason: "This API is highly experimental and may be removed or replaced entirely.")
 
   """The source for the module."""
   source: ModuleSource
@@ -4768,6 +4697,42 @@ input PipelineLabel {
   value: String!
 }
 
+"""A compiled finite DAG of artifact actions."""
+type Plan implements Node {
+  """Merge the changes produced by a GENERATE plan."""
+  changes(
+    """Strategy to apply to conflicts between generated changes."""
+    onConflict: ChangesetsMergeConflict = FAIL_EARLY
+  ): Changeset!
+
+  """A unique identifier for this Plan."""
+  id: ID!
+
+  """Workspace module load failures tolerated while compiling this plan."""
+  loadFailures: [String!]!
+
+  """The finite, deterministically ordered action DAG."""
+  nodes: [Action!]!
+
+  """Execute this plan and wait for completion."""
+  run(
+    """Cancel remaining CHECK actions after the first failure."""
+    failFast: Boolean = false
+  ): Void
+
+  """Evaluate an UP plan that contains exactly one service action."""
+  service: Service!
+
+  """Evaluate an UP plan and return its services in stable node order."""
+  services: [Service!]!
+
+  """The lifecycle operation compiled by this plan."""
+  verb: Verb!
+}
+
+"""A unique identifier for an object."""
+scalar PlanID
+
 """
 The platform config OS and architecture in a Container.
 
@@ -5022,8 +4987,20 @@ type Query implements Node {
     maxAPICalls: Int
   ): LLM! @experimental(reason: "LLM support is not yet stabilized")
 
+  """Load a Action from its ID."""
+  loadActionFromID(id: ActionID!): Action!
+
   """Load a Address from its ID."""
   loadAddressFromID(id: AddressID!): Address!
+
+  """Load a ArtifactDimension from its ID."""
+  loadArtifactDimensionFromID(id: ArtifactDimensionID!): ArtifactDimension!
+
+  """Load a Artifact from its ID."""
+  loadArtifactFromID(id: ArtifactID!): Artifact!
+
+  """Load a Artifacts from its ID."""
+  loadArtifactsFromID(id: ArtifactsID!): Artifacts!
 
   """Load a Binding from its ID."""
   loadBindingFromID(id: BindingID!): Binding!
@@ -5033,12 +5010,6 @@ type Query implements Node {
 
   """Load a Changeset from its ID."""
   loadChangesetFromID(id: ChangesetID!): Changeset!
-
-  """Load a Check from its ID."""
-  loadCheckFromID(id: CheckID!): Check!
-
-  """Load a CheckGroup from its ID."""
-  loadCheckGroupFromID(id: CheckGroupID!): CheckGroup!
 
   """Load a Cloud from its ID."""
   loadCloudFromID(id: CloudID!): Cloud!
@@ -5112,12 +5083,6 @@ type Query implements Node {
   """Load a GeneratedCode from its ID."""
   loadGeneratedCodeFromID(id: GeneratedCodeID!): GeneratedCode!
 
-  """Load a Generator from its ID."""
-  loadGeneratorFromID(id: GeneratorID!): Generator!
-
-  """Load a GeneratorGroup from its ID."""
-  loadGeneratorGroupFromID(id: GeneratorGroupID!): GeneratorGroup!
-
   """Load a GitRef from its ID."""
   loadGitRefFromID(id: GitRefID!): GitRef!
 
@@ -5163,6 +5128,9 @@ type Query implements Node {
   """Load a ObjectTypeDef from its ID."""
   loadObjectTypeDefFromID(id: ObjectTypeDefID!): ObjectTypeDef!
 
+  """Load a Plan from its ID."""
+  loadPlanFromID(id: PlanID!): Plan!
+
   """Load a Port from its ID."""
   loadPortFromID(id: PortID!): Port!
 
@@ -5201,12 +5169,6 @@ type Query implements Node {
 
   """Load a TypeDef from its ID."""
   loadTypeDefFromID(id: TypeDefID!): TypeDef!
-
-  """Load a Up from its ID."""
-  loadUpFromID(id: UpID!): Up!
-
-  """Load a UpGroup from its ID."""
-  loadUpGroupFromID(id: UpGroupID!): UpGroup!
 
   """Load a Workspace from its ID."""
   loadWorkspaceFromID(id: WorkspaceID!): Workspace!
@@ -5802,42 +5764,20 @@ enum TypeDefKind {
   ENUM_KIND
 }
 
-type Up implements Node {
-  """The description of the service"""
-  description: String!
+"""A standardized artifact lifecycle operation."""
+enum Verb {
+  """Validate an artifact."""
+  CHECK
 
-  """A unique identifier for this Up."""
-  id: ID!
+  """Generate workspace changes for an artifact."""
+  GENERATE
 
-  """Return the fully qualified name of the service"""
-  name: String!
+  """Publish an artifact."""
+  SHIP
 
-  """The original module in which the service has been defined"""
-  originalModule: Module!
-
-  """The path of the service within its module"""
-  path: [String!]!
-
-  """Execute the service function"""
-  run: Up!
+  """Start an artifact as a long-running service."""
+  UP
 }
-
-type UpGroup implements Node {
-  """A unique identifier for this UpGroup."""
-  id: ID!
-
-  """Return a list of individual services and their details"""
-  list: [Up!]!
-
-  """Execute all selected service functions"""
-  run: UpGroup!
-}
-
-"""A unique identifier for an object."""
-scalar UpGroupID
-
-"""A unique identifier for an object."""
-scalar UpID
 
 """
 The absence of a value.
@@ -5855,11 +5795,8 @@ type Workspace implements Node {
   """
   address: String!
 
-  """Return all checks from modules loaded in the workspace."""
-  checks(
-    """Only include checks matching the specified patterns"""
-    include: [String!]
-  ): CheckGroup!
+  """A filterable view of all artifacts in this workspace."""
+  artifacts: Artifacts!
 
   """
   Path to config.toml relative to the workspace boundary (empty if not initialized).
@@ -5927,12 +5864,6 @@ type Workspace implements Node {
     from: String = "."
   ): String
 
-  """Return all generators from modules loaded in the workspace."""
-  generators(
-    """Only include generators matching the specified patterns"""
-    include: [String!]
-  ): GeneratorGroup!
-
   """Whether a config.toml file exists in the workspace."""
   hasConfig: Boolean!
 
@@ -5944,12 +5875,6 @@ type Workspace implements Node {
 
   """Workspace directory path relative to the workspace boundary."""
   path: String!
-
-  """Return all services from modules loaded in the workspace."""
-  services(
-    """Only include services matching the specified patterns"""
-    include: [String!]
-  ): UpGroup!
 }
 
 """A unique identifier for an object."""

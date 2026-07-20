@@ -746,10 +746,10 @@ type workspaceOverrideKey struct{}
 
 // ContextWithWorkspaceOverride marks ws as the workspace to hand to SDK
 // functions that take a Workspace argument, in place of the ambient
-// currentWorkspace. Used by the generator framework (GeneratorGroup.Run) to run
-// a workspace's generators against a scoped/overlaid workspace the engine
-// constructed — e.g. ModuleSource.generateLocalDependencies staging a
-// dependency's codegen before generating the dependent.
+// currentWorkspace. Used by artifact actions to run workspace operations
+// against the exact scoped/overlaid workspace the plan was built from — e.g.
+// ModuleSource.generateLocalDependencies staging a dependency's codegen before
+// generating the dependent.
 func ContextWithWorkspaceOverride(ctx context.Context, ws dagql.ObjectResult[*Workspace]) context.Context {
 	return context.WithValue(ctx, workspaceOverrideKey{}, ws)
 }

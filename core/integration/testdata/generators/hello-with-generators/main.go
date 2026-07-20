@@ -53,10 +53,16 @@ func (m *HelloWithGenerators) LazyExecFailure() *dagger.Changeset {
 }
 
 func (m *HelloWithGenerators) WorkspaceGeneratorsEmpty(ctx context.Context, ws *dagger.Workspace) (bool, error) {
-	generated := ws.Generators(dagger.WorkspaceGeneratorsOpts{
-		Include: []string{"toolchain-generators:*"},
-	}).Run()
-	empty, err := generated.IsEmpty(ctx)
+	changes := ws.
+		Artifacts().
+		Plan(
+			dagger.VerbGenerate,
+			dagger.ArtifactsPlanOpts{
+				Include: []dagger.FunctionPattern{"toolchain-generators:*"},
+			},
+		).
+		Changes()
+	empty, err := changes.IsEmpty(ctx)
 	if err != nil {
 		return false, err
 	}

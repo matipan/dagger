@@ -43,7 +43,7 @@ func (m *ServiceRefConsumer) ContainerProvidedBy(ctx context.Context) (string, e
 
 // CheckService passes only when a Service was provided, used to test that
 // settings-wired constructor args resolve under `dagger check` (both filtered
-// and unfiltered) — checks run through the ModTree path, not the client's
+// and unfiltered) — checks run through module DAGQL servers, not the client's
 // session schema, which historically broke module-ref resolution.
 // +check
 func (m *ServiceRefConsumer) CheckService() error {

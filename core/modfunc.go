@@ -458,7 +458,7 @@ func (ud *UserDefault) Value(ctx context.Context) (any, error) {
 	// Resolve object from user-supplied "address" against the schema served to
 	// the main client, which carries the workspace's installed modules as root
 	// fields. The context-stamped server (dagql.CurrentDagqlServer) may be a
-	// standalone per-module server — e.g. under `dagger check`'s ModTree path —
+	// standalone per-module server — e.g. while evaluating an artifact action —
 	// whose root lacks sibling workspace modules, so module refs like
 	// "pulse:serve" would silently fall through to legacy address decoding.
 	servedDeps, err := query.Server.CurrentServedDeps(mainCtx)
@@ -1242,9 +1242,9 @@ func (fn *ModuleFunction) loadWorkspaceArg(
 		return nil, fmt.Errorf("dagql server is nil but required for workspace argument")
 	}
 
-	// The generator framework can hand the SDK a specific workspace to inject
-	// (GeneratorGroup.WorkspaceOverride) — e.g. a scoped/overlaid workspace built
-	// by ModuleSource.generateLocalDependencies. It wins over both the
+	// The execution-plan framework can hand the SDK a specific workspace to
+	// inject — e.g. a scoped/overlaid workspace built by
+	// ModuleSource.generateLocalDependencies. It wins over both the
 	// module-function guard and the ambient currentWorkspace so nested generator
 	// runs receive exactly the workspace the engine constructed.
 	if override, ok := WorkspaceOverrideFromContext(ctx); ok {

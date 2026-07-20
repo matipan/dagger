@@ -270,43 +270,6 @@ func (s *moduleSchema) Install(dag *dagql.Server) {
 		Syncer[*core.Module]().
 			Doc(`Forces evaluation of the module, including any loading into the engine and associated validation.`),
 
-		dagql.NodeFunc("checks", s.moduleChecks).
-			Experimental("This API is highly experimental and may be removed or replaced entirely.").
-			Doc(`Return all checks defined by the module`).
-			Args(
-				dagql.Arg("include").Doc("Only include checks matching the specified patterns"),
-				dagql.Arg("noGenerate").Doc("When true, only return annotated check functions; exclude generate-as-checks").
-					View(AfterVersion("v0.21.0")),
-			),
-
-		dagql.NodeFunc("check", s.moduleCheck).
-			Experimental("This API is highly experimental and may be removed or replaced entirely.").
-			Doc(`Return the check defined by the module with the given name. Must match to exactly one check.`).
-			Args(
-				dagql.Arg("name").Doc("The name of the check to retrieve"),
-			),
-
-		dagql.NodeFunc("generators", s.moduleGenerators).
-			Experimental("This API is highly experimental and may be removed or replaced entirely.").
-			Doc(`Return all generators defined by the module`).
-			Args(
-				dagql.Arg("include").Doc("Only include generators matching the specified patterns"),
-			),
-
-		dagql.NodeFunc("services", s.moduleServices).
-			Experimental("This API is highly experimental and may be removed or replaced entirely.").
-			Doc(`Return all services defined by the module`).
-			Args(
-				dagql.Arg("include").Doc("Only include services matching the specified patterns"),
-			),
-
-		dagql.NodeFunc("generator", s.moduleGenerator).
-			Experimental("This API is highly experimental and may be removed or replaced entirely.").
-			Doc(`Return the generator defined by the module with the given name. Must match to exactly one generator.`).
-			Args(
-				dagql.Arg("name").Doc("The name of the generator to retrieve"),
-			),
-
 		dagql.Func("dependencies", s.moduleDependencies).
 			Doc(`The dependencies of the module.`),
 
@@ -381,13 +344,6 @@ func (s *moduleSchema) Install(dag *dagql.Server) {
 			Doc(`Load a file from the module's scratch working directory, including any changes that may have been made to it during module function execution.Load a file from the module's scratch working directory, including any changes that may have been made to it during module function execution.`).
 			Args(
 				dagql.Arg("path").Doc(`Location of the file to retrieve (e.g., "README.md").`),
-			),
-
-		dagql.Func("generators", s.currentModuleGenerators).
-			Experimental("This API is highly experimental and may be removed or replaced entirely.").
-			Doc(`Return all generators defined by the module`).
-			Args(
-				dagql.Arg("include").Doc("Only include generators matching the specified patterns"),
 			),
 
 		dagql.Func("asSDK", s.currentModuleAsSDK).
@@ -2134,9 +2090,31 @@ func (s *moduleSchema) currentTypeDefs(ctx context.Context, self *core.Query, ar
 		return nil, err
 	}
 
-	queryTypeDef, err := currentQueryTypeDef(ctx, dag)
+	typeDefs, err = withCurrentQueryTypeDef(ctx, dag, typeDefs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load live query typedef: %w", err)
+	}
+
+	if args.HideCore.GetOr(dagql.NewBoolean(false)).Bool() {
+		typeDefs, err = stripCoreQueryFunctions(ctx, dag, typeDefs)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !args.ReturnAllTypes {
+		return typeDefs, nil
+	}
+	return expandTypeDefClosure(ctx, dag, typeDefs)
+}
+
+func withCurrentQueryTypeDef(
+	ctx context.Context,
+	dag *dagql.Server,
+	typeDefs dagql.ObjectResultArray[*core.TypeDef],
+) (dagql.ObjectResultArray[*core.TypeDef], error) {
+	queryTypeDef, err := currentQueryTypeDef(ctx, dag)
+	if err != nil {
+		return nil, err
 	}
 	queryReplaced := false
 	for i, typeDef := range typeDefs {
@@ -2156,17 +2134,7 @@ func (s *moduleSchema) currentTypeDefs(ctx context.Context, self *core.Query, ar
 	if !queryReplaced {
 		typeDefs = append(typeDefs, queryTypeDef)
 	}
-
-	if args.HideCore.GetOr(dagql.NewBoolean(false)).Bool() {
-		typeDefs, err = stripCoreQueryFunctions(ctx, dag, typeDefs)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if !args.ReturnAllTypes {
-		return typeDefs, nil
-	}
-	return expandTypeDefClosure(ctx, dag, typeDefs)
+	return typeDefs, nil
 }
 
 func stripCoreQueryFunctions(
@@ -2656,115 +2624,6 @@ func (s *moduleSchema) moduleIntrospectionSchemaJSON(
 	args struct{},
 ) (dagql.Result[*core.File], error) {
 	return mod.Deps.SchemaIntrospectionJSONFileForModule(ctx)
-}
-
-func (s *moduleSchema) moduleChecks(
-	ctx context.Context,
-	mod dagql.ObjectResult[*core.Module],
-	args struct {
-		Include    dagql.Optional[dagql.ArrayInput[dagql.String]]
-		NoGenerate dagql.Optional[dagql.Boolean]
-	},
-) (*core.CheckGroup, error) {
-	var include []string
-	if args.Include.Valid {
-		for _, pattern := range args.Include.Value {
-			include = append(include, pattern.String())
-		}
-	}
-	return core.NewCheckGroup(ctx, mod, include, args.NoGenerate.GetOr(false).Bool(), false)
-}
-
-func (s *moduleSchema) moduleCheck(
-	ctx context.Context,
-	mod dagql.ObjectResult[*core.Module],
-	args struct {
-		Name string
-	},
-) (*core.Check, error) {
-	checkGroup, err := core.NewCheckGroup(ctx, mod, []string{args.Name}, false, false)
-	if err != nil {
-		return nil, err
-	}
-
-	switch len(checkGroup.Checks) {
-	case 1:
-		return checkGroup.Checks[0].Clone(), nil
-	case 0:
-		return nil, fmt.Errorf("check %q not found in module %q", args.Name, mod.Self().Name())
-	default:
-		return nil, fmt.Errorf("multiple checks found with name %q in module %q", args.Name, mod.Self().Name())
-	}
-}
-
-func (s *moduleSchema) moduleGenerators(
-	ctx context.Context,
-	mod dagql.ObjectResult[*core.Module],
-	args struct {
-		Include dagql.Optional[dagql.ArrayInput[dagql.String]]
-	},
-) (*core.GeneratorGroup, error) {
-	var include []string
-	if args.Include.Valid {
-		for _, pattern := range args.Include.Value {
-			include = append(include, pattern.String())
-		}
-	}
-	return core.NewGeneratorGroup(ctx, mod, include)
-}
-
-func (s *moduleSchema) moduleServices(
-	ctx context.Context,
-	mod dagql.ObjectResult[*core.Module],
-	args struct {
-		Include dagql.Optional[dagql.ArrayInput[dagql.String]]
-	},
-) (*core.UpGroup, error) {
-	var include []string
-	if args.Include.Valid {
-		for _, pattern := range args.Include.Value {
-			include = append(include, pattern.String())
-		}
-	}
-	return core.NewUpGroup(ctx, mod, include)
-}
-
-func (s *moduleSchema) currentModuleGenerators(
-	ctx context.Context,
-	mod *core.CurrentModule,
-	args struct {
-		Include dagql.Optional[dagql.ArrayInput[dagql.String]]
-	},
-) (*core.GeneratorGroup, error) {
-	var include []string
-	if args.Include.Valid {
-		for _, pattern := range args.Include.Value {
-			include = append(include, pattern.String())
-		}
-	}
-	return core.NewGeneratorGroup(ctx, mod.Module, include)
-}
-
-func (s *moduleSchema) moduleGenerator(
-	ctx context.Context,
-	mod dagql.ObjectResult[*core.Module],
-	args struct {
-		Name string
-	},
-) (*core.Generator, error) {
-	generatorGroup, err := core.NewGeneratorGroup(ctx, mod, []string{args.Name})
-	if err != nil {
-		return nil, err
-	}
-
-	switch len(generatorGroup.Generators) {
-	case 1:
-		return generatorGroup.Generators[0].Clone(), nil
-	case 0:
-		return nil, fmt.Errorf("generator %q not found in module %q", args.Name, mod.Self().Name())
-	default:
-		return nil, fmt.Errorf("multiple generators found with name %q in module %q", args.Name, mod.Self().Name())
-	}
 }
 
 func (s *moduleSchema) moduleDependencies(

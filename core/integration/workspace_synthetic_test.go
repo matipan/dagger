@@ -449,17 +449,19 @@ func syntheticWorkspaceGitRef(ctx context.Context, t *testctx.T, c *dagger.Clien
 func assertSyntheticWorkspaceListsAreEmpty(ctx context.Context, t *testctx.T, ws *dagger.Workspace) {
 	t.Helper()
 
-	checks, err := ws.Checks().List(ctx)
+	artifacts, err := ws.Artifacts().Items(ctx)
 	require.NoError(t, err)
-	require.Empty(t, checks)
+	require.Empty(t, artifacts)
 
-	generators, err := ws.Generators().List(ctx)
-	require.NoError(t, err)
-	require.Empty(t, generators)
-
-	services, err := ws.Services().List(ctx)
-	require.NoError(t, err)
-	require.Empty(t, services)
+	for _, verb := range []dagger.Verb{
+		dagger.VerbCheck,
+		dagger.VerbGenerate,
+		dagger.VerbUp,
+	} {
+		nodes, err := ws.Artifacts().Plan(verb).Nodes(ctx)
+		require.NoError(t, err)
+		require.Empty(t, nodes)
+	}
 
 	modules, err := ws.Modules(ctx)
 	require.NoError(t, err)

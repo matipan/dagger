@@ -3,9 +3,32 @@ package core
 import (
 	"context"
 
+	"dagger.io/dagger"
 	"github.com/dagger/testctx"
 	"github.com/stretchr/testify/require"
 )
+
+func initDangModule(name, source string) dagger.WithContainerFunc {
+	return func(ctr *dagger.Container) *dagger.Container {
+		return ctr.
+			WithNewFile("dagger.toml", "[modules]\n").
+			With(daggerExec("sdk", "install", "dang")).
+			With(daggerExec("-y", "module", "init", "dang", name, "--path", "toolchains/"+name)).
+			WithNewFile("toolchains/"+name+"/main.dang", source).
+			With(daggerExec("install", "./toolchains/"+name))
+	}
+}
+
+func initStandaloneDangModule(name, source string) dagger.WithContainerFunc {
+	return func(ctr *dagger.Container) *dagger.Container {
+		return ctr.
+			WithNewFile("dagger.toml", "[modules]\n").
+			With(daggerExec("sdk", "install", "dang")).
+			With(daggerExec("-y", "module", "init", "dang", name, "--path", ".")).
+			WithNewFile("main.dang", source).
+			With(daggerExec("install", "."))
+	}
+}
 
 func (WorkspaceSuite) TestArtifacts(ctx context.Context, t *testctx.T) {
 	c := connect(ctx, t)

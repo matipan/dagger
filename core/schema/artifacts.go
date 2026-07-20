@@ -6,6 +6,7 @@ import (
 
 	"github.com/dagger/dagger/core"
 	"github.com/dagger/dagger/dagql"
+	"github.com/dagger/dagger/dagql/call"
 )
 
 type artifactsSchema struct{}
@@ -58,9 +59,66 @@ func (s *artifactsSchema) Install(srv *dagql.Server) {
 
 func (s *artifactsSchema) artifacts(
 	ctx context.Context,
-	_ *core.Workspace,
+	workspace *core.Workspace,
 	_ struct{},
 ) (*core.Artifacts, error) {
+	currentCall := dagql.CurrentCall(ctx)
+	if currentCall == nil {
+		return nil, fmt.Errorf("artifacts: current call not found")
+	}
+	if currentCall.Receiver == nil || currentCall.Receiver.ResultID == 0 {
+		return nil, fmt.Errorf("artifacts: attached workspace receiver not found")
+	}
+	workspaceID := call.NewEngineResultID(
+		currentCall.Receiver.ResultID,
+		call.NewType(workspace.Type()),
+	)
+	return core.NewWorkspaceArtifacts(workspace, workspaceID), nil
+}
+
+func materializeArtifacts(
+	ctx context.Context,
+	artifacts *core.Artifacts,
+	include []core.FunctionPattern,
+	bestEffort bool,
+) (*core.Artifacts, []string, error) {
+	if artifacts.IsMaterialized() {
+		return artifacts, nil, nil
+	}
+	workspace := artifacts.Workspace()
+	if workspace == nil {
+		return artifacts, nil, nil
+	}
+	if isSyntheticWorkspace(workspace) {
+		materialized, err := artifacts.Materialize(core.NewArtifactsFromTypeDefs(nil))
+		return materialized, nil, err
+	}
+
+	workspaceCtx, err := withWorkspaceClientContext(ctx, workspace)
+	if err != nil {
+		return nil, nil, err
+	}
+	loadFailures, err := ensureWorkspaceModulesLoaded(
+		workspaceCtx,
+		artifacts.WorkspaceModuleSelectors(include),
+		bestEffort,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	snapshot, err := workspaceArtifactsSnapshot(workspaceCtx)
+	if err != nil {
+		return nil, nil, err
+	}
+	materialized, err := artifacts.Materialize(snapshot)
+	if err != nil {
+		return nil, nil, err
+	}
+	return materialized, loadFailures, nil
+}
+
+func workspaceArtifactsSnapshot(ctx context.Context) (*core.Artifacts, error) {
 	query, err := core.CurrentQuery(ctx)
 	if err != nil {
 		return nil, err
@@ -73,7 +131,10 @@ func (s *artifactsSchema) artifacts(
 	if err != nil {
 		return nil, fmt.Errorf("get workspace schema: %w", err)
 	}
-	typeDefs, err := served.TypeDefs(ctx, dag.Canonical())
+	// Entrypoint schemas replace the module constructor with flattened proxy
+	// fields. Artifact discovery needs the canonical module root instead.
+	dag = dag.Canonical()
+	typeDefs, err := buildTypeDefsFromSchema(ctx, dag)
 	if err != nil {
 		return nil, fmt.Errorf("introspect workspace schema: %w", err)
 	}
@@ -102,19 +163,27 @@ func (s *artifactsSchema) filterCoordinates(
 }
 
 func (s *artifactsSchema) dimensions(
-	_ context.Context,
+	ctx context.Context,
 	artifacts *core.Artifacts,
 	_ struct{},
 ) ([]*core.ArtifactDimension, error) {
-	return artifacts.Dimensions(), nil
+	materialized, _, err := materializeArtifacts(ctx, artifacts, nil, false)
+	if err != nil {
+		return nil, err
+	}
+	return materialized.Dimensions(), nil
 }
 
 func (s *artifactsSchema) items(
-	_ context.Context,
+	ctx context.Context,
 	artifacts *core.Artifacts,
 	_ struct{},
 ) ([]*core.Artifact, error) {
-	return artifacts.Items(), nil
+	materialized, _, err := materializeArtifacts(ctx, artifacts, nil, false)
+	if err != nil {
+		return nil, err
+	}
+	return materialized.Items(), nil
 }
 
 func (s *artifactsSchema) dimensionName(

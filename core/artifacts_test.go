@@ -81,6 +81,31 @@ func TestArtifactsFilterDimensionAndScope(t *testing.T) {
 	require.EqualError(t, err, `artifact dimension "missing" not found`)
 }
 
+func TestWorkspaceArtifactsMaterializeOnce(t *testing.T) {
+	artifacts := NewWorkspaceArtifacts(&Workspace{}, nil)
+	artifacts, err := artifacts.FilterCoordinates(ArtifactTypeDimension, []string{"go"})
+	require.NoError(t, err)
+
+	snapshot := NewArtifactsFromTypeDefs(artifactTestTypeDefs(t,
+		artifactTestRoot(t, "go", "Go"),
+		artifactTestRoot(t, "js", "Js"),
+	))
+	materialized, err := artifacts.Materialize(snapshot)
+	require.NoError(t, err)
+	require.Equal(t, []string{"go"}, artifactCoordinates(t, materialized))
+
+	replacement := NewArtifactsFromTypeDefs(artifactTestTypeDefs(t,
+		artifactTestRoot(t, "other", "Other"),
+	))
+	target, err := materialized.Materialize(replacement)
+	require.NoError(t, err)
+	require.Equal(t, []string{"go"}, artifactCoordinates(t, target))
+
+	target, err = target.FilterCoordinates(ArtifactTypeDimension, []string{"js"})
+	require.NoError(t, err)
+	require.Empty(t, target.Items())
+}
+
 func artifactTestTypeDefs(t *testing.T, queryFunctions ...*Function) dagql.ObjectResultArray[*TypeDef] {
 	t.Helper()
 	dag := newTypeDefTestDag(t)

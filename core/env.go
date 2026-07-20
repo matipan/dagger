@@ -198,38 +198,6 @@ func (env *Env) WithoutInput(key string) *Env {
 	return env
 }
 
-// Checks returns a CheckGroup from the main module
-func (env *Env) Checks(ctx context.Context, include []string, noGenerate bool) (*CheckGroup, error) {
-	if env.MainModule.Self() == nil {
-		return nil, fmt.Errorf("no main module set on environment")
-	}
-	return NewCheckGroup(ctx, env.MainModule, include, noGenerate, false)
-}
-
-// Services returns an UpGroup from the main module
-func (env *Env) Services(ctx context.Context, include []string) (*UpGroup, error) {
-	if env.MainModule.Self() == nil {
-		return nil, fmt.Errorf("no main module set on environment")
-	}
-	return NewUpGroup(ctx, env.MainModule, include)
-}
-
-// Check returns a single check by name from the main module
-func (env *Env) Check(ctx context.Context, name string) (*Check, error) {
-	checkGroup, err := env.Checks(ctx, []string{name}, false)
-	if err != nil {
-		return nil, err
-	}
-	switch len(checkGroup.Checks) {
-	case 1:
-		return checkGroup.Checks[0].Clone(), nil
-	case 0:
-		return nil, fmt.Errorf("check %q not found", name)
-	default:
-		return nil, fmt.Errorf("multiple checks found with name %q", name)
-	}
-}
-
 type Binding struct {
 	Key         string
 	Value       dagql.Typed

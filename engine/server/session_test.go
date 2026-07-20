@@ -936,9 +936,8 @@ func TestFilterPendingWorkspaceModulesBySelectorInclude(t *testing.T) {
 	t.Run("already-served module is recognized and selects nothing", func(t *testing.T) {
 		t.Parallel()
 
-		// A re-evaluated selector (e.g. loading a GeneratorGroup from its ID
-		// on a later request) names a module that already loaded; it must not
-		// fall back to loading everything.
+		// A re-evaluated plan selector on a later request may name a module that
+		// already loaded; it must not fall back to loading everything.
 		served := map[string]struct{}{"dang-sdk": {}}
 		filtered := filterPendingWorkspaceModulesBySelectorInclude(mods, served, []string{"dang-sdk"})
 		require.Empty(t, filtered)
@@ -955,8 +954,8 @@ func TestFilterPendingWorkspaceModulesBySelectorInclude(t *testing.T) {
 	t.Run("camelCase pattern selects the kebab-case module", func(t *testing.T) {
 		t.Parallel()
 
-		// Name matching is kebab-normalized on both sides, like the include
-		// matchers the selector resolvers use (ModTreePath.Glob/CliCase).
+		// Name matching is kebab-normalized on both sides, like artifact and
+		// action selectors.
 		filtered := filterPendingWorkspaceModulesBySelectorInclude(mods, nil, []string{"goSdk:generate"})
 		require.Equal(t, []pendingModule{mods[0]}, filtered)
 	})

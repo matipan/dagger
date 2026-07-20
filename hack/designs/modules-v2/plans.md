@@ -133,6 +133,12 @@ type Plan {
   nodes: [Action!]!
 
   """
+  Workspace module load failures tolerated while compiling this plan.
+  Non-empty only for best-effort GENERATE compilation.
+  """
+  loadFailures: [String!]!
+
+  """
   Evaluate this plan as an UP plan and return the resulting services in stable
   node order.
   Valid only when `verb = UP`.
@@ -160,7 +166,13 @@ type Plan {
   `service`) when callers need the evaluated results without realizing the
   full verb effect.
   """
-  run: Void
+  run(
+    """
+    Cancel remaining CHECK actions after the first failure.
+    Ignored for other verbs.
+    """
+    failFast: Boolean! = false
+  ): Void
 }
 ```
 
@@ -333,6 +345,14 @@ Conservative — no recursive expansion:
 
 This avoids surprising workspace mutations.
 
+Workspace-backed artifact scopes load only the modules demanded by artifact
+filters and entrypoint selectors. GENERATE compilation is best-effort because
+generation may be the operation that repairs a module that cannot currently
+load. Such failures are omitted from the compiled nodes and exposed through
+`Plan.loadFailures`; callers that require a complete load can reject the plan
+before evaluating it. Other verbs fail compilation when a demanded module
+cannot load.
+
 ## Plan Execution
 
 Execution has two layers: **evaluate** the selected functions to their typed
@@ -349,7 +369,8 @@ results, then **realize** the verb effect. For `CHECK` these collapse together.
 
 `dagger check`/`generate` always compile a Plan and then run it. `--plan` stops
 after compilation and displays the DAG. Within a plan, actions with no pending
-"after" dependency run concurrently.
+"after" dependency run concurrently. CHECK callers may pass `failFast: true` to
+cancel remaining independent actions after the first failure.
 
 ## Decisions
 
@@ -372,6 +393,10 @@ after compilation and displays the DAG. Within a plan, actions with no pending
   discovery lives on `Artifact.actions(...)`, not on `Artifacts`.
 - `Plan.changes()`/`services()`/`service()` expose evaluated verb results.
   `Plan.run()` and `Action.run()` return void on success, error on failure.
+- GENERATE plan compilation may tolerate demanded workspace modules that cannot
+  load and reports them through `Plan.loadFailures`; other verbs remain strict.
+- `Plan.run(failFast: true)` cancels remaining CHECK actions after the first
+  failure.
 - `dagger check -l` prints plain paths for one artifact and a minimal
   distinguishing table for several.
 - Replaces `CheckGroup`. Transition path: `CheckGroup` → Execution Plans.

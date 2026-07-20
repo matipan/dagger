@@ -134,6 +134,9 @@ func (e *ExecError) Unwrap() error {
 	return e.original
 }
 
+// A glob pattern matching artifact-relative function paths.
+type FunctionPattern string
+
 // A unique identifier for an object.
 type ID string
 
@@ -202,6 +205,153 @@ type PortForward struct {
 
 	// Transport layer protocol to use for traffic.
 	Protocol NetworkProtocol `json:"protocol,omitempty"`
+}
+
+// One exact artifact lifecycle invocation.
+type Action struct {
+	query *querybuilder.Selection
+
+	collectionBatched *bool
+	id                *ID
+	run               *Void
+	verb              *Verb
+}
+type WithActionFunc func(r *Action) *Action
+
+// With calls the provided function with current Action.
+//
+// This is useful for reusability and readability by not breaking the calling chain.
+func (r *Action) With(f WithActionFunc) *Action {
+	return f(r)
+}
+
+func (r *Action) WithGraphQLQuery(q *querybuilder.Selection) *Action {
+	return &Action{
+		query: q,
+	}
+}
+
+// Actions that must complete before this action.
+func (r *Action) After(ctx context.Context) ([]ID, error) {
+	q := r.query.Select("after")
+
+	var response []ID
+
+	q = q.Bind(&response)
+	return response, q.Execute(ctx)
+}
+
+// Whether this action was compiled for a collection as one batch.
+func (r *Action) CollectionBatched(ctx context.Context) (bool, error) {
+	if r.collectionBatched != nil {
+		return *r.collectionBatched, nil
+	}
+	q := r.query.Select("collectionBatched")
+
+	var response bool
+
+	q = q.Bind(&response)
+	return response, q.Execute(ctx)
+}
+
+// The exact artifact-relative function path.
+func (r *Action) FunctionPath(ctx context.Context) ([]string, error) {
+	q := r.query.Select("functionPath")
+
+	var response []string
+
+	q = q.Bind(&response)
+	return response, q.Execute(ctx)
+}
+
+// A unique identifier for this Action.
+func (r *Action) ID(ctx context.Context) (ID, error) {
+	if r.id != nil {
+		return *r.id, nil
+	}
+	q := r.query.Select("id")
+
+	var response ID
+
+	q = q.Bind(&response)
+	return response, q.Execute(ctx)
+}
+
+// XXX_GraphQLType is an internal function. It returns the native GraphQL type name
+func (r *Action) XXX_GraphQLType() string {
+	return "Action"
+}
+
+// XXX_GraphQLIDType is an internal function. It returns the native GraphQL type name for the ID of this object
+func (r *Action) XXX_GraphQLIDType() string {
+	return "ID"
+}
+
+// XXX_GraphQLID is an internal function. It returns the underlying type ID
+func (r *Action) XXX_GraphQLID(ctx context.Context) (string, error) {
+	id, err := r.ID(ctx)
+	if err != nil {
+		return "", err
+	}
+	return string(id), nil
+}
+
+func (r *Action) MarshalJSON() ([]byte, error) {
+	id, err := r.ID(marshalCtx)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(id)
+}
+
+// Execute this action and wait for completion.
+func (r *Action) Run(ctx context.Context) error {
+	if r.run != nil {
+		return nil
+	}
+	q := r.query.Select("run")
+
+	return q.Execute(ctx)
+}
+
+// The artifact targeted by this action.
+func (r *Action) Target() *Artifacts {
+	q := r.query.Select("target")
+
+	return &Artifacts{
+		query: q,
+	}
+}
+
+// The lifecycle operation performed by this action.
+func (r *Action) Verb(ctx context.Context) (Verb, error) {
+	if r.verb != nil {
+		return *r.verb, nil
+	}
+	q := r.query.Select("verb")
+
+	var response Verb
+
+	q = q.Bind(&response)
+	return response, q.Execute(ctx)
+}
+
+// Return this action with additional dependencies.
+func (r *Action) WithAfter(actions []*Action) *Action {
+	q := r.query.Select("withAfter")
+	q = q.Arg("actions", actions)
+
+	return &Action{
+		query: q,
+	}
+}
+
+// AsNode returns this Action as a Node.
+// This is a local type conversion — no GraphQL call.
+func (r *Action) AsNode() Node {
+	return &NodeClient{
+		query: r.query,
+	}
 }
 
 // A standardized address to load containers, directories, secrets, and other object types. Address format depends on the type, and is validated at type selection.
@@ -430,6 +580,62 @@ func (r *Artifact) WithGraphQLQuery(q *querybuilder.Selection) *Artifact {
 	return &Artifact{
 		query: q,
 	}
+}
+
+// Select one exact lifecycle action on this artifact.
+func (r *Artifact) Action(verb Verb, functionPath []string) *Action {
+	q := r.query.Select("action")
+	q = q.Arg("verb", verb)
+	q = q.Arg("functionPath", functionPath)
+
+	return &Action{
+		query: q,
+	}
+}
+
+// ArtifactActionsOpts contains options for Artifact.Actions
+type ArtifactActionsOpts struct {
+	// Only return actions for these lifecycle operations.
+	Verbs []Verb
+}
+
+// Discover lifecycle actions rooted at this artifact.
+func (r *Artifact) Actions(ctx context.Context, opts ...ArtifactActionsOpts) ([]Action, error) {
+	q := r.query.Select("actions")
+	for i := len(opts) - 1; i >= 0; i-- {
+		// `verbs` optional argument
+		if !querybuilder.IsZeroValue(opts[i].Verbs) {
+			q = q.Arg("verbs", opts[i].Verbs)
+		}
+	}
+
+	q = q.Select("id")
+
+	type actions struct {
+		Id ID
+	}
+
+	convert := func(fields []actions) []Action {
+		out := []Action{}
+
+		for i := range fields {
+			val := Action{id: &fields[i].Id}
+			val.query = selectNode(q.Root(), fields[i].Id, "Action")
+			out = append(out, val)
+		}
+
+		return out
+	}
+	var response []actions
+
+	q = q.Bind(&response)
+
+	err := q.Execute(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return convert(response), nil
 }
 
 // Look up this artifact's coordinate for one dimension.
@@ -745,6 +951,34 @@ func (r *Artifacts) Items(ctx context.Context) ([]Artifact, error) {
 	return convert(response), nil
 }
 
+// ArtifactsPlanOpts contains options for Artifacts.Plan
+type ArtifactsPlanOpts struct {
+	// Only include matching artifact-relative function paths.
+	Include []FunctionPattern
+	// Exclude matching artifact-relative function paths.
+	Exclude []FunctionPattern
+}
+
+// Compile matching artifact actions into an execution plan.
+func (r *Artifacts) Plan(verb Verb, opts ...ArtifactsPlanOpts) *Plan {
+	q := r.query.Select("plan")
+	for i := len(opts) - 1; i >= 0; i-- {
+		// `include` optional argument
+		if !querybuilder.IsZeroValue(opts[i].Include) {
+			q = q.Arg("include", opts[i].Include)
+		}
+		// `exclude` optional argument
+		if !querybuilder.IsZeroValue(opts[i].Exclude) {
+			q = q.Arg("exclude", opts[i].Exclude)
+		}
+	}
+	q = q.Arg("verb", verb)
+
+	return &Plan{
+		query: q,
+	}
+}
+
 // AsNode returns this Artifacts as a Node.
 // This is a local type conversion — no GraphQL call.
 func (r *Artifacts) AsNode() Node {
@@ -766,6 +1000,15 @@ type Binding struct {
 
 func (r *Binding) WithGraphQLQuery(q *querybuilder.Selection) *Binding {
 	return &Binding{
+		query: q,
+	}
+}
+
+// Retrieve the binding value, as type Action
+func (r *Binding) AsAction() *Action {
+	q := r.query.Select("asAction")
+
+	return &Action{
 		query: q,
 	}
 }
@@ -820,24 +1063,6 @@ func (r *Binding) AsChangeset() *Changeset {
 	q := r.query.Select("asChangeset")
 
 	return &Changeset{
-		query: q,
-	}
-}
-
-// Retrieve the binding value, as type Check
-func (r *Binding) AsCheck() *Check {
-	q := r.query.Select("asCheck")
-
-	return &Check{
-		query: q,
-	}
-}
-
-// Retrieve the binding value, as type CheckGroup
-func (r *Binding) AsCheckGroup() *CheckGroup {
-	q := r.query.Select("asCheckGroup")
-
-	return &CheckGroup{
 		query: q,
 	}
 }
@@ -932,24 +1157,6 @@ func (r *Binding) AsFile() *File {
 	}
 }
 
-// Retrieve the binding value, as type Generator
-func (r *Binding) AsGenerator() *Generator {
-	q := r.query.Select("asGenerator")
-
-	return &Generator{
-		query: q,
-	}
-}
-
-// Retrieve the binding value, as type GeneratorGroup
-func (r *Binding) AsGeneratorGroup() *GeneratorGroup {
-	q := r.query.Select("asGeneratorGroup")
-
-	return &GeneratorGroup{
-		query: q,
-	}
-}
-
 // Retrieve the binding value, as type GitRef
 func (r *Binding) AsGitRef() *GitRef {
 	q := r.query.Select("asGitRef")
@@ -1031,6 +1238,15 @@ func (r *Binding) AsModuleSource() *ModuleSource {
 	}
 }
 
+// Retrieve the binding value, as type Plan
+func (r *Binding) AsPlan() *Plan {
+	q := r.query.Select("asPlan")
+
+	return &Plan{
+		query: q,
+	}
+}
+
 // Retrieve the binding value, as type Schema
 func (r *Binding) AsSchema() *Schema {
 	q := r.query.Select("asSchema")
@@ -1105,24 +1321,6 @@ func (r *Binding) AsString(ctx context.Context) (string, error) {
 
 	q = q.Bind(&response)
 	return response, q.Execute(ctx)
-}
-
-// Retrieve the binding value, as type Up
-func (r *Binding) AsUp() *Up {
-	q := r.query.Select("asUp")
-
-	return &Up{
-		query: q,
-	}
-}
-
-// Retrieve the binding value, as type UpGroup
-func (r *Binding) AsUpGroup() *UpGroup {
-	q := r.query.Select("asUpGroup")
-
-	return &UpGroup{
-		query: q,
-	}
 }
 
 // Retrieve the binding value, as type Volume
@@ -1636,326 +1834,6 @@ func (r *Changeset) AsNode() Node {
 // This is a local type conversion — no GraphQL call.
 func (r *Changeset) AsSyncer() Syncer {
 	return &SyncerClient{
-		query: r.query,
-	}
-}
-
-type Check struct {
-	query *querybuilder.Selection
-
-	checkType   *string
-	completed   *bool
-	description *string
-	id          *ID
-	name        *string
-	passed      *bool
-	resultEmoji *string
-}
-type WithCheckFunc func(r *Check) *Check
-
-// With calls the provided function with current Check.
-//
-// This is useful for reusability and readability by not breaking the calling chain.
-func (r *Check) With(f WithCheckFunc) *Check {
-	return f(r)
-}
-
-func (r *Check) WithGraphQLQuery(q *querybuilder.Selection) *Check {
-	return &Check{
-		query: q,
-	}
-}
-
-// The type of check: 'check' for annotated checks, 'generate' for generate-as-checks
-func (r *Check) CheckType(ctx context.Context) (string, error) {
-	if r.checkType != nil {
-		return *r.checkType, nil
-	}
-	q := r.query.Select("checkType")
-
-	var response string
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// Whether the check completed
-func (r *Check) Completed(ctx context.Context) (bool, error) {
-	if r.completed != nil {
-		return *r.completed, nil
-	}
-	q := r.query.Select("completed")
-
-	var response bool
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// The description of the check
-func (r *Check) Description(ctx context.Context) (string, error) {
-	if r.description != nil {
-		return *r.description, nil
-	}
-	q := r.query.Select("description")
-
-	var response string
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// If the check failed, this is the error
-func (r *Check) Error() *Error {
-	q := r.query.Select("error")
-
-	return &Error{
-		query: q,
-	}
-}
-
-// A unique identifier for this Check.
-func (r *Check) ID(ctx context.Context) (ID, error) {
-	if r.id != nil {
-		return *r.id, nil
-	}
-	q := r.query.Select("id")
-
-	var response ID
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// XXX_GraphQLType is an internal function. It returns the native GraphQL type name
-func (r *Check) XXX_GraphQLType() string {
-	return "Check"
-}
-
-// XXX_GraphQLIDType is an internal function. It returns the native GraphQL type name for the ID of this object
-func (r *Check) XXX_GraphQLIDType() string {
-	return "ID"
-}
-
-// XXX_GraphQLID is an internal function. It returns the underlying type ID
-func (r *Check) XXX_GraphQLID(ctx context.Context) (string, error) {
-	id, err := r.ID(ctx)
-	if err != nil {
-		return "", err
-	}
-	return string(id), nil
-}
-
-func (r *Check) MarshalJSON() ([]byte, error) {
-	id, err := r.ID(marshalCtx)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(id)
-}
-
-// Return the fully qualified name of the check
-func (r *Check) Name(ctx context.Context) (string, error) {
-	if r.name != nil {
-		return *r.name, nil
-	}
-	q := r.query.Select("name")
-
-	var response string
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// The original module in which the check has been defined
-func (r *Check) OriginalModule() *Module {
-	q := r.query.Select("originalModule")
-
-	return &Module{
-		query: q,
-	}
-}
-
-// Whether the check passed
-func (r *Check) Passed(ctx context.Context) (bool, error) {
-	if r.passed != nil {
-		return *r.passed, nil
-	}
-	q := r.query.Select("passed")
-
-	var response bool
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// The path of the check within its module
-func (r *Check) Path(ctx context.Context) ([]string, error) {
-	q := r.query.Select("path")
-
-	var response []string
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// An emoji representing the result of the check
-func (r *Check) ResultEmoji(ctx context.Context) (string, error) {
-	if r.resultEmoji != nil {
-		return *r.resultEmoji, nil
-	}
-	q := r.query.Select("resultEmoji")
-
-	var response string
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// Execute the check
-func (r *Check) Run() *Check {
-	q := r.query.Select("run")
-
-	return &Check{
-		query: q,
-	}
-}
-
-// AsNode returns this Check as a Node.
-// This is a local type conversion — no GraphQL call.
-func (r *Check) AsNode() Node {
-	return &NodeClient{
-		query: r.query,
-	}
-}
-
-type CheckGroup struct {
-	query *querybuilder.Selection
-
-	id *ID
-}
-type WithCheckGroupFunc func(r *CheckGroup) *CheckGroup
-
-// With calls the provided function with current CheckGroup.
-//
-// This is useful for reusability and readability by not breaking the calling chain.
-func (r *CheckGroup) With(f WithCheckGroupFunc) *CheckGroup {
-	return f(r)
-}
-
-func (r *CheckGroup) WithGraphQLQuery(q *querybuilder.Selection) *CheckGroup {
-	return &CheckGroup{
-		query: q,
-	}
-}
-
-// A unique identifier for this CheckGroup.
-func (r *CheckGroup) ID(ctx context.Context) (ID, error) {
-	if r.id != nil {
-		return *r.id, nil
-	}
-	q := r.query.Select("id")
-
-	var response ID
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// XXX_GraphQLType is an internal function. It returns the native GraphQL type name
-func (r *CheckGroup) XXX_GraphQLType() string {
-	return "CheckGroup"
-}
-
-// XXX_GraphQLIDType is an internal function. It returns the native GraphQL type name for the ID of this object
-func (r *CheckGroup) XXX_GraphQLIDType() string {
-	return "ID"
-}
-
-// XXX_GraphQLID is an internal function. It returns the underlying type ID
-func (r *CheckGroup) XXX_GraphQLID(ctx context.Context) (string, error) {
-	id, err := r.ID(ctx)
-	if err != nil {
-		return "", err
-	}
-	return string(id), nil
-}
-
-func (r *CheckGroup) MarshalJSON() ([]byte, error) {
-	id, err := r.ID(marshalCtx)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(id)
-}
-
-// Return a list of individual checks and their details
-func (r *CheckGroup) List(ctx context.Context) ([]Check, error) {
-	q := r.query.Select("list")
-
-	q = q.Select("id")
-
-	type list struct {
-		Id ID
-	}
-
-	convert := func(fields []list) []Check {
-		out := []Check{}
-
-		for i := range fields {
-			val := Check{id: &fields[i].Id}
-			val.query = selectNode(q.Root(), fields[i].Id, "Check")
-			out = append(out, val)
-		}
-
-		return out
-	}
-	var response []list
-
-	q = q.Bind(&response)
-
-	err := q.Execute(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return convert(response), nil
-}
-
-// Generate a markdown report
-func (r *CheckGroup) Report() *File {
-	q := r.query.Select("report")
-
-	return &File{
-		query: q,
-	}
-}
-
-// CheckGroupRunOpts contains options for CheckGroup.Run
-type CheckGroupRunOpts struct {
-	// If true, stop running checks as soon as any check fails.
-	FailFast bool
-}
-
-// Execute all selected checks
-func (r *CheckGroup) Run(opts ...CheckGroupRunOpts) *CheckGroup {
-	q := r.query.Select("run")
-	for i := len(opts) - 1; i >= 0; i-- {
-		// `failFast` optional argument
-		if !querybuilder.IsZeroValue(opts[i].FailFast) {
-			q = q.Arg("failFast", opts[i].FailFast)
-		}
-	}
-
-	return &CheckGroup{
-		query: q,
-	}
-}
-
-// AsNode returns this CheckGroup as a Node.
-// This is a local type conversion — no GraphQL call.
-func (r *CheckGroup) AsNode() Node {
-	return &NodeClient{
 		query: r.query,
 	}
 }
@@ -4380,29 +4258,6 @@ func (r *CurrentModule) GeneratedContextDirectory() *Directory {
 	}
 }
 
-// CurrentModuleGeneratorsOpts contains options for CurrentModule.Generators
-type CurrentModuleGeneratorsOpts struct {
-	// Only include generators matching the specified patterns
-	Include []string
-}
-
-// Return all generators defined by the module
-//
-// Experimental: This API is highly experimental and may be removed or replaced entirely.
-func (r *CurrentModule) Generators(opts ...CurrentModuleGeneratorsOpts) *GeneratorGroup {
-	q := r.query.Select("generators")
-	for i := len(opts) - 1; i >= 0; i-- {
-		// `include` optional argument
-		if !querybuilder.IsZeroValue(opts[i].Include) {
-			q = q.Arg("include", opts[i].Include)
-		}
-	}
-
-	return &GeneratorGroup{
-		query: q,
-	}
-}
-
 // A unique identifier for this CurrentModule.
 func (r *CurrentModule) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -6761,47 +6616,6 @@ func (r *Env) WithGraphQLQuery(q *querybuilder.Selection) *Env {
 	}
 }
 
-// Return the check with the given name from the installed modules. Must match exactly one check.
-//
-// Experimental: Checks API is highly experimental and may be removed or replaced entirely.
-func (r *Env) Check(name string) *Check {
-	q := r.query.Select("check")
-	q = q.Arg("name", name)
-
-	return &Check{
-		query: q,
-	}
-}
-
-// EnvChecksOpts contains options for Env.Checks
-type EnvChecksOpts struct {
-	// Only include checks matching the specified patterns
-	Include []string
-	// When true, only return annotated check functions; exclude generate-as-checks
-	NoGenerate bool
-}
-
-// Return all checks defined by the installed modules
-//
-// Experimental: Checks API is highly experimental and may be removed or replaced entirely.
-func (r *Env) Checks(opts ...EnvChecksOpts) *CheckGroup {
-	q := r.query.Select("checks")
-	for i := len(opts) - 1; i >= 0; i-- {
-		// `include` optional argument
-		if !querybuilder.IsZeroValue(opts[i].Include) {
-			q = q.Arg("include", opts[i].Include)
-		}
-		// `noGenerate` optional argument
-		if !querybuilder.IsZeroValue(opts[i].NoGenerate) {
-			q = q.Arg("noGenerate", opts[i].NoGenerate)
-		}
-	}
-
-	return &CheckGroup{
-		query: q,
-	}
-}
-
 // A unique identifier for this Env.
 func (r *Env) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -6928,25 +6742,26 @@ func (r *Env) Outputs(ctx context.Context) ([]Binding, error) {
 	return convert(response), nil
 }
 
-// EnvServicesOpts contains options for Env.Services
-type EnvServicesOpts struct {
-	// Only include services matching the specified patterns
-	Include []string
+// Create or update a binding of type Action in the environment
+func (r *Env) WithActionInput(name string, value *Action, description string) *Env {
+	assertNotNil("value", value)
+	q := r.query.Select("withActionInput")
+	q = q.Arg("name", name)
+	q = q.Arg("value", value)
+	q = q.Arg("description", description)
+
+	return &Env{
+		query: q,
+	}
 }
 
-// Return all services defined by the installed modules
-//
-// Experimental: Services API is highly experimental and may be removed or replaced entirely.
-func (r *Env) Services(opts ...EnvServicesOpts) *UpGroup {
-	q := r.query.Select("services")
-	for i := len(opts) - 1; i >= 0; i-- {
-		// `include` optional argument
-		if !querybuilder.IsZeroValue(opts[i].Include) {
-			q = q.Arg("include", opts[i].Include)
-		}
-	}
+// Declare a desired Action output to be assigned in the environment
+func (r *Env) WithActionOutput(name string, description string) *Env {
+	q := r.query.Select("withActionOutput")
+	q = q.Arg("name", name)
+	q = q.Arg("description", description)
 
-	return &UpGroup{
+	return &Env{
 		query: q,
 	}
 }
@@ -7087,54 +6902,6 @@ func (r *Env) WithChangesetInput(name string, value *Changeset, description stri
 // Declare a desired Changeset output to be assigned in the environment
 func (r *Env) WithChangesetOutput(name string, description string) *Env {
 	q := r.query.Select("withChangesetOutput")
-	q = q.Arg("name", name)
-	q = q.Arg("description", description)
-
-	return &Env{
-		query: q,
-	}
-}
-
-// Create or update a binding of type CheckGroup in the environment
-func (r *Env) WithCheckGroupInput(name string, value *CheckGroup, description string) *Env {
-	assertNotNil("value", value)
-	q := r.query.Select("withCheckGroupInput")
-	q = q.Arg("name", name)
-	q = q.Arg("value", value)
-	q = q.Arg("description", description)
-
-	return &Env{
-		query: q,
-	}
-}
-
-// Declare a desired CheckGroup output to be assigned in the environment
-func (r *Env) WithCheckGroupOutput(name string, description string) *Env {
-	q := r.query.Select("withCheckGroupOutput")
-	q = q.Arg("name", name)
-	q = q.Arg("description", description)
-
-	return &Env{
-		query: q,
-	}
-}
-
-// Create or update a binding of type Check in the environment
-func (r *Env) WithCheckInput(name string, value *Check, description string) *Env {
-	assertNotNil("value", value)
-	q := r.query.Select("withCheckInput")
-	q = q.Arg("name", name)
-	q = q.Arg("value", value)
-	q = q.Arg("description", description)
-
-	return &Env{
-		query: q,
-	}
-}
-
-// Declare a desired Check output to be assigned in the environment
-func (r *Env) WithCheckOutput(name string, description string) *Env {
-	q := r.query.Select("withCheckOutput")
 	q = q.Arg("name", name)
 	q = q.Arg("description", description)
 
@@ -7394,54 +7161,6 @@ func (r *Env) WithFileOutput(name string, description string) *Env {
 	}
 }
 
-// Create or update a binding of type GeneratorGroup in the environment
-func (r *Env) WithGeneratorGroupInput(name string, value *GeneratorGroup, description string) *Env {
-	assertNotNil("value", value)
-	q := r.query.Select("withGeneratorGroupInput")
-	q = q.Arg("name", name)
-	q = q.Arg("value", value)
-	q = q.Arg("description", description)
-
-	return &Env{
-		query: q,
-	}
-}
-
-// Declare a desired GeneratorGroup output to be assigned in the environment
-func (r *Env) WithGeneratorGroupOutput(name string, description string) *Env {
-	q := r.query.Select("withGeneratorGroupOutput")
-	q = q.Arg("name", name)
-	q = q.Arg("description", description)
-
-	return &Env{
-		query: q,
-	}
-}
-
-// Create or update a binding of type Generator in the environment
-func (r *Env) WithGeneratorInput(name string, value *Generator, description string) *Env {
-	assertNotNil("value", value)
-	q := r.query.Select("withGeneratorInput")
-	q = q.Arg("name", name)
-	q = q.Arg("value", value)
-	q = q.Arg("description", description)
-
-	return &Env{
-		query: q,
-	}
-}
-
-// Declare a desired Generator output to be assigned in the environment
-func (r *Env) WithGeneratorOutput(name string, description string) *Env {
-	q := r.query.Select("withGeneratorOutput")
-	q = q.Arg("name", name)
-	q = q.Arg("description", description)
-
-	return &Env{
-		query: q,
-	}
-}
-
 // Create or update a binding of type GitRef in the environment
 func (r *Env) WithGitRefInput(name string, value *GitRef, description string) *Env {
 	assertNotNil("value", value)
@@ -7686,6 +7405,30 @@ func (r *Env) WithModuleSourceOutput(name string, description string) *Env {
 	}
 }
 
+// Create or update a binding of type Plan in the environment
+func (r *Env) WithPlanInput(name string, value *Plan, description string) *Env {
+	assertNotNil("value", value)
+	q := r.query.Select("withPlanInput")
+	q = q.Arg("name", name)
+	q = q.Arg("value", value)
+	q = q.Arg("description", description)
+
+	return &Env{
+		query: q,
+	}
+}
+
+// Declare a desired Plan output to be assigned in the environment
+func (r *Env) WithPlanOutput(name string, description string) *Env {
+	q := r.query.Select("withPlanOutput")
+	q = q.Arg("name", name)
+	q = q.Arg("description", description)
+
+	return &Env{
+		query: q,
+	}
+}
+
 // Create or update a binding of type Schema in the environment
 func (r *Env) WithSchemaInput(name string, value *Schema, description string) *Env {
 	assertNotNil("value", value)
@@ -7869,54 +7612,6 @@ func (r *Env) WithStringInput(name string, value string, description string) *En
 // Declares a desired string output binding
 func (r *Env) WithStringOutput(name string, description string) *Env {
 	q := r.query.Select("withStringOutput")
-	q = q.Arg("name", name)
-	q = q.Arg("description", description)
-
-	return &Env{
-		query: q,
-	}
-}
-
-// Create or update a binding of type UpGroup in the environment
-func (r *Env) WithUpGroupInput(name string, value *UpGroup, description string) *Env {
-	assertNotNil("value", value)
-	q := r.query.Select("withUpGroupInput")
-	q = q.Arg("name", name)
-	q = q.Arg("value", value)
-	q = q.Arg("description", description)
-
-	return &Env{
-		query: q,
-	}
-}
-
-// Declare a desired UpGroup output to be assigned in the environment
-func (r *Env) WithUpGroupOutput(name string, description string) *Env {
-	q := r.query.Select("withUpGroupOutput")
-	q = q.Arg("name", name)
-	q = q.Arg("description", description)
-
-	return &Env{
-		query: q,
-	}
-}
-
-// Create or update a binding of type Up in the environment
-func (r *Env) WithUpInput(name string, value *Up, description string) *Env {
-	assertNotNil("value", value)
-	q := r.query.Select("withUpInput")
-	q = q.Arg("name", name)
-	q = q.Arg("value", value)
-	q = q.Arg("description", description)
-
-	return &Env{
-		query: q,
-	}
-}
-
-// Declare a desired Up output to be assigned in the environment
-func (r *Env) WithUpOutput(name string, description string) *Env {
-	q := r.query.Select("withUpOutput")
 	q = q.Arg("name", name)
 	q = q.Arg("description", description)
 
@@ -10063,330 +9758,6 @@ func (r *GeneratedCode) WithVCSIgnoredPaths(paths []string) *GeneratedCode {
 // AsNode returns this GeneratedCode as a Node.
 // This is a local type conversion — no GraphQL call.
 func (r *GeneratedCode) AsNode() Node {
-	return &NodeClient{
-		query: r.query,
-	}
-}
-
-type Generator struct {
-	query *querybuilder.Selection
-
-	completed   *bool
-	description *string
-	id          *ID
-	isEmpty     *bool
-	name        *string
-}
-type WithGeneratorFunc func(r *Generator) *Generator
-
-// With calls the provided function with current Generator.
-//
-// This is useful for reusability and readability by not breaking the calling chain.
-func (r *Generator) With(f WithGeneratorFunc) *Generator {
-	return f(r)
-}
-
-func (r *Generator) WithGraphQLQuery(q *querybuilder.Selection) *Generator {
-	return &Generator{
-		query: q,
-	}
-}
-
-// The generated changeset from the last run
-func (r *Generator) Changes() *Changeset {
-	q := r.query.Select("changes")
-
-	return &Changeset{
-		query: q,
-	}
-}
-
-// Whether the generator complete
-func (r *Generator) Completed(ctx context.Context) (bool, error) {
-	if r.completed != nil {
-		return *r.completed, nil
-	}
-	q := r.query.Select("completed")
-
-	var response bool
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// Return the description of the generator
-func (r *Generator) Description(ctx context.Context) (string, error) {
-	if r.description != nil {
-		return *r.description, nil
-	}
-	q := r.query.Select("description")
-
-	var response string
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// A unique identifier for this Generator.
-func (r *Generator) ID(ctx context.Context) (ID, error) {
-	if r.id != nil {
-		return *r.id, nil
-	}
-	q := r.query.Select("id")
-
-	var response ID
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// XXX_GraphQLType is an internal function. It returns the native GraphQL type name
-func (r *Generator) XXX_GraphQLType() string {
-	return "Generator"
-}
-
-// XXX_GraphQLIDType is an internal function. It returns the native GraphQL type name for the ID of this object
-func (r *Generator) XXX_GraphQLIDType() string {
-	return "ID"
-}
-
-// XXX_GraphQLID is an internal function. It returns the underlying type ID
-func (r *Generator) XXX_GraphQLID(ctx context.Context) (string, error) {
-	id, err := r.ID(ctx)
-	if err != nil {
-		return "", err
-	}
-	return string(id), nil
-}
-
-func (r *Generator) MarshalJSON() ([]byte, error) {
-	id, err := r.ID(marshalCtx)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(id)
-}
-
-// Whether changeset from the last generator run is empty or not
-func (r *Generator) IsEmpty(ctx context.Context) (bool, error) {
-	if r.isEmpty != nil {
-		return *r.isEmpty, nil
-	}
-	q := r.query.Select("isEmpty")
-
-	var response bool
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// Return the fully qualified name of the generator
-func (r *Generator) Name(ctx context.Context) (string, error) {
-	if r.name != nil {
-		return *r.name, nil
-	}
-	q := r.query.Select("name")
-
-	var response string
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// The original module in which the generator has been defined
-func (r *Generator) OriginalModule() *Module {
-	q := r.query.Select("originalModule")
-
-	return &Module{
-		query: q,
-	}
-}
-
-// The path of the generator within its module
-func (r *Generator) Path(ctx context.Context) ([]string, error) {
-	q := r.query.Select("path")
-
-	var response []string
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// Execute the generator
-func (r *Generator) Run() *Generator {
-	q := r.query.Select("run")
-
-	return &Generator{
-		query: q,
-	}
-}
-
-// AsNode returns this Generator as a Node.
-// This is a local type conversion — no GraphQL call.
-func (r *Generator) AsNode() Node {
-	return &NodeClient{
-		query: r.query,
-	}
-}
-
-type GeneratorGroup struct {
-	query *querybuilder.Selection
-
-	id      *ID
-	isEmpty *bool
-}
-type WithGeneratorGroupFunc func(r *GeneratorGroup) *GeneratorGroup
-
-// With calls the provided function with current GeneratorGroup.
-//
-// This is useful for reusability and readability by not breaking the calling chain.
-func (r *GeneratorGroup) With(f WithGeneratorGroupFunc) *GeneratorGroup {
-	return f(r)
-}
-
-func (r *GeneratorGroup) WithGraphQLQuery(q *querybuilder.Selection) *GeneratorGroup {
-	return &GeneratorGroup{
-		query: q,
-	}
-}
-
-// GeneratorGroupChangesOpts contains options for GeneratorGroup.Changes
-type GeneratorGroupChangesOpts struct {
-	// Strategy to apply on conflicts between generators
-	//
-	// Default: FAIL_EARLY
-	OnConflict ChangesetsMergeConflict
-}
-
-// The combined changes from the last run of the generators
-//
-// If any conflict occurs, for instance if the same file is modified by multiple generators, or if a file is both modified and deleted, an error is raised and the merge of the changesets will failed.
-//
-// Set 'continueOnConflicts' flag to force to merge the changes in a 'last write wins' strategy.
-func (r *GeneratorGroup) Changes(opts ...GeneratorGroupChangesOpts) *Changeset {
-	q := r.query.Select("changes")
-	for i := len(opts) - 1; i >= 0; i-- {
-		// `onConflict` optional argument
-		if !querybuilder.IsZeroValue(opts[i].OnConflict) {
-			q = q.Arg("onConflict", opts[i].OnConflict)
-		}
-	}
-
-	return &Changeset{
-		query: q,
-	}
-}
-
-// A unique identifier for this GeneratorGroup.
-func (r *GeneratorGroup) ID(ctx context.Context) (ID, error) {
-	if r.id != nil {
-		return *r.id, nil
-	}
-	q := r.query.Select("id")
-
-	var response ID
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// XXX_GraphQLType is an internal function. It returns the native GraphQL type name
-func (r *GeneratorGroup) XXX_GraphQLType() string {
-	return "GeneratorGroup"
-}
-
-// XXX_GraphQLIDType is an internal function. It returns the native GraphQL type name for the ID of this object
-func (r *GeneratorGroup) XXX_GraphQLIDType() string {
-	return "ID"
-}
-
-// XXX_GraphQLID is an internal function. It returns the underlying type ID
-func (r *GeneratorGroup) XXX_GraphQLID(ctx context.Context) (string, error) {
-	id, err := r.ID(ctx)
-	if err != nil {
-		return "", err
-	}
-	return string(id), nil
-}
-
-func (r *GeneratorGroup) MarshalJSON() ([]byte, error) {
-	id, err := r.ID(marshalCtx)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(id)
-}
-
-// Whether the generated changeset from the last run is empty or not
-func (r *GeneratorGroup) IsEmpty(ctx context.Context) (bool, error) {
-	if r.isEmpty != nil {
-		return *r.isEmpty, nil
-	}
-	q := r.query.Select("isEmpty")
-
-	var response bool
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// Return a list of individual generators and their details
-func (r *GeneratorGroup) List(ctx context.Context) ([]Generator, error) {
-	q := r.query.Select("list")
-
-	q = q.Select("id")
-
-	type list struct {
-		Id ID
-	}
-
-	convert := func(fields []list) []Generator {
-		out := []Generator{}
-
-		for i := range fields {
-			val := Generator{id: &fields[i].Id}
-			val.query = selectNode(q.Root(), fields[i].Id, "Generator")
-			out = append(out, val)
-		}
-
-		return out
-	}
-	var response []list
-
-	q = q.Bind(&response)
-
-	err := q.Execute(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return convert(response), nil
-}
-
-// Load failures tolerated while collecting the generators.
-//
-// Empty unless a workspace module could not be loaded during an unscoped 'dagger generate' (no selector), where load failures are tolerated so the modules that do load still generate. Each entry is a human-readable error message. An explicit selector keeps failing hard instead.
-func (r *GeneratorGroup) LoadFailures(ctx context.Context) ([]string, error) {
-	q := r.query.Select("loadFailures")
-
-	var response []string
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// Execute all selected generators
-func (r *GeneratorGroup) Run() *GeneratorGroup {
-	q := r.query.Select("run")
-
-	return &GeneratorGroup{
-		query: q,
-	}
-}
-
-// AsNode returns this GeneratorGroup as a Node.
-// This is a local type conversion — no GraphQL call.
-func (r *GeneratorGroup) AsNode() Node {
 	return &NodeClient{
 		query: r.query,
 	}
@@ -12837,47 +12208,6 @@ func (r *Module) WithGraphQLQuery(q *querybuilder.Selection) *Module {
 	}
 }
 
-// Return the check defined by the module with the given name. Must match to exactly one check.
-//
-// Experimental: This API is highly experimental and may be removed or replaced entirely.
-func (r *Module) Check(name string) *Check {
-	q := r.query.Select("check")
-	q = q.Arg("name", name)
-
-	return &Check{
-		query: q,
-	}
-}
-
-// ModuleChecksOpts contains options for Module.Checks
-type ModuleChecksOpts struct {
-	// Only include checks matching the specified patterns
-	Include []string
-	// When true, only return annotated check functions; exclude generate-as-checks
-	NoGenerate bool
-}
-
-// Return all checks defined by the module
-//
-// Experimental: This API is highly experimental and may be removed or replaced entirely.
-func (r *Module) Checks(opts ...ModuleChecksOpts) *CheckGroup {
-	q := r.query.Select("checks")
-	for i := len(opts) - 1; i >= 0; i-- {
-		// `include` optional argument
-		if !querybuilder.IsZeroValue(opts[i].Include) {
-			q = q.Arg("include", opts[i].Include)
-		}
-		// `noGenerate` optional argument
-		if !querybuilder.IsZeroValue(opts[i].NoGenerate) {
-			q = q.Arg("noGenerate", opts[i].NoGenerate)
-		}
-	}
-
-	return &CheckGroup{
-		query: q,
-	}
-}
-
 // The dependencies of the module.
 func (r *Module) Dependencies(ctx context.Context) ([]Module, error) {
 	q := r.query.Select("dependencies")
@@ -12962,41 +12292,6 @@ func (r *Module) GeneratedContextDirectory() *Directory {
 	q := r.query.Select("generatedContextDirectory")
 
 	return &Directory{
-		query: q,
-	}
-}
-
-// Return the generator defined by the module with the given name. Must match to exactly one generator.
-//
-// Experimental: This API is highly experimental and may be removed or replaced entirely.
-func (r *Module) Generator(name string) *Generator {
-	q := r.query.Select("generator")
-	q = q.Arg("name", name)
-
-	return &Generator{
-		query: q,
-	}
-}
-
-// ModuleGeneratorsOpts contains options for Module.Generators
-type ModuleGeneratorsOpts struct {
-	// Only include generators matching the specified patterns
-	Include []string
-}
-
-// Return all generators defined by the module
-//
-// Experimental: This API is highly experimental and may be removed or replaced entirely.
-func (r *Module) Generators(opts ...ModuleGeneratorsOpts) *GeneratorGroup {
-	q := r.query.Select("generators")
-	for i := len(opts) - 1; i >= 0; i-- {
-		// `include` optional argument
-		if !querybuilder.IsZeroValue(opts[i].Include) {
-			q = q.Arg("include", opts[i].Include)
-		}
-	}
-
-	return &GeneratorGroup{
 		query: q,
 	}
 }
@@ -13179,29 +12474,6 @@ func (r *Module) Serve(ctx context.Context, opts ...ModuleServeOpts) error {
 	}
 
 	return q.Execute(ctx)
-}
-
-// ModuleServicesOpts contains options for Module.Services
-type ModuleServicesOpts struct {
-	// Only include services matching the specified patterns
-	Include []string
-}
-
-// Return all services defined by the module
-//
-// Experimental: This API is highly experimental and may be removed or replaced entirely.
-func (r *Module) Services(opts ...ModuleServicesOpts) *UpGroup {
-	q := r.query.Select("services")
-	for i := len(opts) - 1; i >= 0; i-- {
-		// `include` optional argument
-		if !querybuilder.IsZeroValue(opts[i].Include) {
-			q = q.Arg("include", opts[i].Include)
-		}
-	}
-
-	return &UpGroup{
-		query: q,
-	}
 }
 
 // The source for the module.
@@ -14348,6 +13620,212 @@ func (r *ObjectTypeDef) SourceModuleName(ctx context.Context) (string, error) {
 // AsNode returns this ObjectTypeDef as a Node.
 // This is a local type conversion — no GraphQL call.
 func (r *ObjectTypeDef) AsNode() Node {
+	return &NodeClient{
+		query: r.query,
+	}
+}
+
+// A compiled finite DAG of artifact actions.
+type Plan struct {
+	query *querybuilder.Selection
+
+	id   *ID
+	run  *Void
+	verb *Verb
+}
+
+func (r *Plan) WithGraphQLQuery(q *querybuilder.Selection) *Plan {
+	return &Plan{
+		query: q,
+	}
+}
+
+// PlanChangesOpts contains options for Plan.Changes
+type PlanChangesOpts struct {
+	// Strategy to apply to conflicts between generated changes.
+	//
+	// Default: FAIL_EARLY
+	OnConflict ChangesetsMergeConflict
+}
+
+// Merge the changes produced by a GENERATE plan.
+func (r *Plan) Changes(opts ...PlanChangesOpts) *Changeset {
+	q := r.query.Select("changes")
+	for i := len(opts) - 1; i >= 0; i-- {
+		// `onConflict` optional argument
+		if !querybuilder.IsZeroValue(opts[i].OnConflict) {
+			q = q.Arg("onConflict", opts[i].OnConflict)
+		}
+	}
+
+	return &Changeset{
+		query: q,
+	}
+}
+
+// A unique identifier for this Plan.
+func (r *Plan) ID(ctx context.Context) (ID, error) {
+	if r.id != nil {
+		return *r.id, nil
+	}
+	q := r.query.Select("id")
+
+	var response ID
+
+	q = q.Bind(&response)
+	return response, q.Execute(ctx)
+}
+
+// XXX_GraphQLType is an internal function. It returns the native GraphQL type name
+func (r *Plan) XXX_GraphQLType() string {
+	return "Plan"
+}
+
+// XXX_GraphQLIDType is an internal function. It returns the native GraphQL type name for the ID of this object
+func (r *Plan) XXX_GraphQLIDType() string {
+	return "ID"
+}
+
+// XXX_GraphQLID is an internal function. It returns the underlying type ID
+func (r *Plan) XXX_GraphQLID(ctx context.Context) (string, error) {
+	id, err := r.ID(ctx)
+	if err != nil {
+		return "", err
+	}
+	return string(id), nil
+}
+
+func (r *Plan) MarshalJSON() ([]byte, error) {
+	id, err := r.ID(marshalCtx)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(id)
+}
+
+// Workspace module load failures tolerated while compiling this plan.
+func (r *Plan) LoadFailures(ctx context.Context) ([]string, error) {
+	q := r.query.Select("loadFailures")
+
+	var response []string
+
+	q = q.Bind(&response)
+	return response, q.Execute(ctx)
+}
+
+// The finite, deterministically ordered action DAG.
+func (r *Plan) Nodes(ctx context.Context) ([]Action, error) {
+	q := r.query.Select("nodes")
+
+	q = q.Select("id")
+
+	type nodes struct {
+		Id ID
+	}
+
+	convert := func(fields []nodes) []Action {
+		out := []Action{}
+
+		for i := range fields {
+			val := Action{id: &fields[i].Id}
+			val.query = selectNode(q.Root(), fields[i].Id, "Action")
+			out = append(out, val)
+		}
+
+		return out
+	}
+	var response []nodes
+
+	q = q.Bind(&response)
+
+	err := q.Execute(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return convert(response), nil
+}
+
+// PlanRunOpts contains options for Plan.Run
+type PlanRunOpts struct {
+	// Cancel remaining CHECK actions after the first failure.
+	FailFast bool
+}
+
+// Execute this plan and wait for completion.
+func (r *Plan) Run(ctx context.Context, opts ...PlanRunOpts) error {
+	if r.run != nil {
+		return nil
+	}
+	q := r.query.Select("run")
+	for i := len(opts) - 1; i >= 0; i-- {
+		// `failFast` optional argument
+		if !querybuilder.IsZeroValue(opts[i].FailFast) {
+			q = q.Arg("failFast", opts[i].FailFast)
+		}
+	}
+
+	return q.Execute(ctx)
+}
+
+// Evaluate an UP plan that contains exactly one service action.
+func (r *Plan) Service() *Service {
+	q := r.query.Select("service")
+
+	return &Service{
+		query: q,
+	}
+}
+
+// Evaluate an UP plan and return its services in stable node order.
+func (r *Plan) Services(ctx context.Context) ([]Service, error) {
+	q := r.query.Select("services")
+
+	q = q.Select("id")
+
+	type services struct {
+		Id ID
+	}
+
+	convert := func(fields []services) []Service {
+		out := []Service{}
+
+		for i := range fields {
+			val := Service{id: &fields[i].Id}
+			val.query = selectNode(q.Root(), fields[i].Id, "Service")
+			out = append(out, val)
+		}
+
+		return out
+	}
+	var response []services
+
+	q = q.Bind(&response)
+
+	err := q.Execute(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return convert(response), nil
+}
+
+// The lifecycle operation compiled by this plan.
+func (r *Plan) Verb(ctx context.Context) (Verb, error) {
+	if r.verb != nil {
+		return *r.verb, nil
+	}
+	q := r.query.Select("verb")
+
+	var response Verb
+
+	q = q.Bind(&response)
+	return response, q.Execute(ctx)
+}
+
+// AsNode returns this Plan as a Node.
+// This is a local type conversion — no GraphQL call.
+func (r *Plan) AsNode() Node {
 	return &NodeClient{
 		query: r.query,
 	}
@@ -17005,240 +16483,6 @@ func (r *TypeDef) AsNode() Node {
 	}
 }
 
-type Up struct {
-	query *querybuilder.Selection
-
-	description *string
-	id          *ID
-	name        *string
-}
-type WithUpFunc func(r *Up) *Up
-
-// With calls the provided function with current Up.
-//
-// This is useful for reusability and readability by not breaking the calling chain.
-func (r *Up) With(f WithUpFunc) *Up {
-	return f(r)
-}
-
-func (r *Up) WithGraphQLQuery(q *querybuilder.Selection) *Up {
-	return &Up{
-		query: q,
-	}
-}
-
-// The description of the service
-func (r *Up) Description(ctx context.Context) (string, error) {
-	if r.description != nil {
-		return *r.description, nil
-	}
-	q := r.query.Select("description")
-
-	var response string
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// A unique identifier for this Up.
-func (r *Up) ID(ctx context.Context) (ID, error) {
-	if r.id != nil {
-		return *r.id, nil
-	}
-	q := r.query.Select("id")
-
-	var response ID
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// XXX_GraphQLType is an internal function. It returns the native GraphQL type name
-func (r *Up) XXX_GraphQLType() string {
-	return "Up"
-}
-
-// XXX_GraphQLIDType is an internal function. It returns the native GraphQL type name for the ID of this object
-func (r *Up) XXX_GraphQLIDType() string {
-	return "ID"
-}
-
-// XXX_GraphQLID is an internal function. It returns the underlying type ID
-func (r *Up) XXX_GraphQLID(ctx context.Context) (string, error) {
-	id, err := r.ID(ctx)
-	if err != nil {
-		return "", err
-	}
-	return string(id), nil
-}
-
-func (r *Up) MarshalJSON() ([]byte, error) {
-	id, err := r.ID(marshalCtx)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(id)
-}
-
-// Return the fully qualified name of the service
-func (r *Up) Name(ctx context.Context) (string, error) {
-	if r.name != nil {
-		return *r.name, nil
-	}
-	q := r.query.Select("name")
-
-	var response string
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// The original module in which the service has been defined
-func (r *Up) OriginalModule() *Module {
-	q := r.query.Select("originalModule")
-
-	return &Module{
-		query: q,
-	}
-}
-
-// The path of the service within its module
-func (r *Up) Path(ctx context.Context) ([]string, error) {
-	q := r.query.Select("path")
-
-	var response []string
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// Execute the service function
-func (r *Up) Run() *Up {
-	q := r.query.Select("run")
-
-	return &Up{
-		query: q,
-	}
-}
-
-// AsNode returns this Up as a Node.
-// This is a local type conversion — no GraphQL call.
-func (r *Up) AsNode() Node {
-	return &NodeClient{
-		query: r.query,
-	}
-}
-
-type UpGroup struct {
-	query *querybuilder.Selection
-
-	id *ID
-}
-type WithUpGroupFunc func(r *UpGroup) *UpGroup
-
-// With calls the provided function with current UpGroup.
-//
-// This is useful for reusability and readability by not breaking the calling chain.
-func (r *UpGroup) With(f WithUpGroupFunc) *UpGroup {
-	return f(r)
-}
-
-func (r *UpGroup) WithGraphQLQuery(q *querybuilder.Selection) *UpGroup {
-	return &UpGroup{
-		query: q,
-	}
-}
-
-// A unique identifier for this UpGroup.
-func (r *UpGroup) ID(ctx context.Context) (ID, error) {
-	if r.id != nil {
-		return *r.id, nil
-	}
-	q := r.query.Select("id")
-
-	var response ID
-
-	q = q.Bind(&response)
-	return response, q.Execute(ctx)
-}
-
-// XXX_GraphQLType is an internal function. It returns the native GraphQL type name
-func (r *UpGroup) XXX_GraphQLType() string {
-	return "UpGroup"
-}
-
-// XXX_GraphQLIDType is an internal function. It returns the native GraphQL type name for the ID of this object
-func (r *UpGroup) XXX_GraphQLIDType() string {
-	return "ID"
-}
-
-// XXX_GraphQLID is an internal function. It returns the underlying type ID
-func (r *UpGroup) XXX_GraphQLID(ctx context.Context) (string, error) {
-	id, err := r.ID(ctx)
-	if err != nil {
-		return "", err
-	}
-	return string(id), nil
-}
-
-func (r *UpGroup) MarshalJSON() ([]byte, error) {
-	id, err := r.ID(marshalCtx)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(id)
-}
-
-// Return a list of individual services and their details
-func (r *UpGroup) List(ctx context.Context) ([]Up, error) {
-	q := r.query.Select("list")
-
-	q = q.Select("id")
-
-	type list struct {
-		Id ID
-	}
-
-	convert := func(fields []list) []Up {
-		out := []Up{}
-
-		for i := range fields {
-			val := Up{id: &fields[i].Id}
-			val.query = selectNode(q.Root(), fields[i].Id, "Up")
-			out = append(out, val)
-		}
-
-		return out
-	}
-	var response []list
-
-	q = q.Bind(&response)
-
-	err := q.Execute(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return convert(response), nil
-}
-
-// Execute all selected service functions
-func (r *UpGroup) Run() *UpGroup {
-	q := r.query.Select("run")
-
-	return &UpGroup{
-		query: q,
-	}
-}
-
-// AsNode returns this UpGroup as a Node.
-// This is a local type conversion — no GraphQL call.
-func (r *UpGroup) AsNode() Node {
-	return &NodeClient{
-		query: r.query,
-	}
-}
-
 // A filesystem volume that can be mounted into containers.
 type Volume struct {
 	query *querybuilder.Selection
@@ -17354,45 +16598,6 @@ func (r *Workspace) Changes() *Changeset {
 	q := r.query.Select("changes")
 
 	return &Changeset{
-		query: q,
-	}
-}
-
-// WorkspaceChecksOpts contains options for Workspace.Checks
-type WorkspaceChecksOpts struct {
-	// Only include checks matching the specified patterns
-	Include []string
-	// Skip checks matching the specified patterns
-	Skip []string
-	// When true, only return annotated check functions; exclude generate-as-checks
-	NoGenerate bool
-	// When true, only return generate-as-checks; exclude annotated check functions
-	OnlyGenerate bool
-}
-
-// Return all checks from modules loaded in the workspace.
-func (r *Workspace) Checks(opts ...WorkspaceChecksOpts) *CheckGroup {
-	q := r.query.Select("checks")
-	for i := len(opts) - 1; i >= 0; i-- {
-		// `include` optional argument
-		if !querybuilder.IsZeroValue(opts[i].Include) {
-			q = q.Arg("include", opts[i].Include)
-		}
-		// `skip` optional argument
-		if !querybuilder.IsZeroValue(opts[i].Skip) {
-			q = q.Arg("skip", opts[i].Skip)
-		}
-		// `noGenerate` optional argument
-		if !querybuilder.IsZeroValue(opts[i].NoGenerate) {
-			q = q.Arg("noGenerate", opts[i].NoGenerate)
-		}
-		// `onlyGenerate` optional argument
-		if !querybuilder.IsZeroValue(opts[i].OnlyGenerate) {
-			q = q.Arg("onlyGenerate", opts[i].OnlyGenerate)
-		}
-	}
-
-	return &CheckGroup{
 		query: q,
 	}
 }
@@ -17558,27 +16763,6 @@ func (r *Workspace) FindUp(ctx context.Context, name string, opts ...WorkspaceFi
 
 	q = q.Bind(&response)
 	return response, q.Execute(ctx)
-}
-
-// WorkspaceGeneratorsOpts contains options for Workspace.Generators
-type WorkspaceGeneratorsOpts struct {
-	// Only include generators matching the specified patterns
-	Include []string
-}
-
-// Return all generators from modules loaded in the workspace.
-func (r *Workspace) Generators(opts ...WorkspaceGeneratorsOpts) *GeneratorGroup {
-	q := r.query.Select("generators")
-	for i := len(opts) - 1; i >= 0; i-- {
-		// `include` optional argument
-		if !querybuilder.IsZeroValue(opts[i].Include) {
-			q = q.Arg("include", opts[i].Include)
-		}
-	}
-
-	return &GeneratorGroup{
-		query: q,
-	}
 }
 
 // Git state for this workspace. Errors if the workspace is not in a git repository.
@@ -17856,27 +17040,6 @@ func (r *Workspace) Search(ctx context.Context, pattern string, opts ...Workspac
 	}
 
 	return convert(response), nil
-}
-
-// WorkspaceServicesOpts contains options for Workspace.Services
-type WorkspaceServicesOpts struct {
-	// Only include services matching the specified patterns
-	Include []string
-}
-
-// Return all services from modules loaded in the workspace.
-func (r *Workspace) Services(opts ...WorkspaceServicesOpts) *UpGroup {
-	q := r.query.Select("services")
-	for i := len(opts) - 1; i >= 0; i-- {
-		// `include` optional argument
-		if !querybuilder.IsZeroValue(opts[i].Include) {
-			q = q.Arg("include", opts[i].Include)
-		}
-	}
-
-	return &UpGroup{
-		query: q,
-	}
 }
 
 // Return this workspace with a changeset applied, without mutating the source.
@@ -20436,6 +19599,77 @@ const (
 	//
 	// Always paired with an EnumTypeDef.
 	TypeDefKindEnum TypeDefKind = TypeDefKindEnumKind
+)
+
+// A standardized artifact lifecycle operation.
+type Verb string
+
+func (Verb) IsEnum() {}
+
+func (v Verb) Name() string {
+	switch v {
+	case VerbCheck:
+		return "CHECK"
+	case VerbGenerate:
+		return "GENERATE"
+	case VerbShip:
+		return "SHIP"
+	case VerbUp:
+		return "UP"
+	default:
+		return ""
+	}
+}
+
+func (v Verb) Value() string {
+	return string(v)
+}
+
+func (v *Verb) MarshalJSON() ([]byte, error) {
+	if *v == "" {
+		return []byte(`""`), nil
+	}
+	name := v.Name()
+	if name == "" {
+		return nil, fmt.Errorf("invalid enum value %q", *v)
+	}
+	return json.Marshal(name)
+}
+
+func (v *Verb) UnmarshalJSON(dt []byte) error {
+	var s string
+	if err := json.Unmarshal(dt, &s); err != nil {
+		return err
+	}
+	switch s {
+	case "":
+		*v = ""
+	case "CHECK":
+		*v = VerbCheck
+	case "GENERATE":
+		*v = VerbGenerate
+	case "SHIP":
+		*v = VerbShip
+	case "UP":
+		*v = VerbUp
+	default:
+		return fmt.Errorf("invalid enum value %q", s)
+	}
+	return nil
+}
+
+const (
+	// Validate an artifact.
+	VerbCheck Verb = "CHECK"
+
+	// Generate workspace changes for an artifact.
+	VerbGenerate Verb = "GENERATE"
+
+	// Publish an artifact.
+	VerbShip Verb = "SHIP"
+
+	// Start an artifact as a long-running service.
+	VerbUp Verb = "UP"
 )
 
 // selectNode returns a query selection for node(id:) scoped to the

@@ -40,35 +40,6 @@ func TestInitialWorkspaceConfigOmitsCheckGenerated(t *testing.T) {
 	require.Nil(t, cfg.CheckGenerated)
 }
 
-func TestMatchWorkspaceInclude(t *testing.T) {
-	ctx := context.Background()
-	node := modTreeNode("go", "lint")
-
-	t.Run("empty include matches everything", func(t *testing.T) {
-		match, err := matchWorkspaceInclude(ctx, node, nil)
-		require.NoError(t, err)
-		require.True(t, match)
-	})
-
-	t.Run("module-prefixed pattern matches", func(t *testing.T) {
-		match, err := matchWorkspaceInclude(ctx, node, []string{"go:lint"})
-		require.NoError(t, err)
-		require.True(t, match)
-	})
-
-	t.Run("wildcard module pattern matches", func(t *testing.T) {
-		match, err := matchWorkspaceInclude(ctx, node, []string{"go:**"})
-		require.NoError(t, err)
-		require.True(t, match)
-	})
-
-	t.Run("other module does not match", func(t *testing.T) {
-		match, err := matchWorkspaceInclude(ctx, node, []string{"helm:**"})
-		require.NoError(t, err)
-		require.False(t, match)
-	})
-}
-
 func TestWorkspaceConfigWithCompatFallback(t *testing.T) {
 	ctx := context.Background()
 
@@ -138,81 +109,6 @@ func TestWorkspaceConfigSkipPatterns(t *testing.T) {
 		require.Equal(t, map[string][]string{
 			"hello-with-generators": {"generate-other-files", "other-generators:*"},
 		}, patterns)
-	})
-}
-
-func TestFilterGeneratorsByInclude(t *testing.T) {
-	ctx := context.Background()
-	generators := []*core.Generator{
-		{Node: modTreeNode("hello-with-generators-java", "generate-files")},
-		{Node: modTreeNode("hello-with-generators-java", "generate-other-files")},
-	}
-
-	t.Run("workspace-qualified patterns still match", func(t *testing.T) {
-		filtered, err := filterGeneratorsByInclude(
-			ctx,
-			generators,
-			[]string{"hello-with-generators-java:generate-*"},
-			false,
-		)
-		require.NoError(t, err)
-		require.Len(t, filtered, 2)
-	})
-
-	t.Run("single generator module keeps legacy include semantics", func(t *testing.T) {
-		filtered, err := filterGeneratorsByInclude(
-			ctx,
-			generators,
-			[]string{"generate-*"},
-			true,
-		)
-		require.NoError(t, err)
-		require.Len(t, filtered, 2)
-	})
-
-	t.Run("legacy include does not match without compat fallback", func(t *testing.T) {
-		filtered, err := filterGeneratorsByInclude(
-			ctx,
-			generators,
-			[]string{"generate-*"},
-			false,
-		)
-		require.NoError(t, err)
-		require.Empty(t, filtered)
-	})
-}
-
-func TestSelectVisibleGeneratorModules(t *testing.T) {
-	names := func(entries []workspaceGeneratorModule) []string {
-		result := make([]string, 0, len(entries))
-		for _, entry := range entries {
-			result = append(result, entry.name)
-		}
-		return result
-	}
-
-	t.Run("wrapper hides raw blueprint alias", func(t *testing.T) {
-		visible := selectVisibleGeneratorModules([]workspaceGeneratorModule{
-			{name: "hello-with-generators", sourceDigest: "sha256:blueprint", isWrapper: false},
-			{name: "app", sourceDigest: "sha256:blueprint", isWrapper: true},
-		})
-		require.Equal(t, []string{"app"}, names(visible))
-	})
-
-	t.Run("single raw module remains visible", func(t *testing.T) {
-		visible := selectVisibleGeneratorModules([]workspaceGeneratorModule{
-			{name: "hello-with-generators", sourceDigest: "sha256:blueprint", isWrapper: false},
-		})
-		require.Equal(t, []string{"hello-with-generators"}, names(visible))
-	})
-
-	t.Run("multiple wrappers sharing one implementation remain visible", func(t *testing.T) {
-		visible := selectVisibleGeneratorModules([]workspaceGeneratorModule{
-			{name: "hello-with-generators", sourceDigest: "sha256:blueprint", isWrapper: false},
-			{name: "app", sourceDigest: "sha256:blueprint", isWrapper: true},
-			{name: "ci", sourceDigest: "sha256:blueprint", isWrapper: true},
-		})
-		require.Equal(t, []string{"app", "ci"}, names(visible))
 	})
 }
 
@@ -711,15 +607,4 @@ func TestWorkspaceFilterWithDirectoryArgs(t *testing.T) {
 	for _, arg := range args {
 		require.NotEqual(t, "directory", arg.Name)
 	}
-}
-
-func modTreeNode(parts ...string) *core.ModTreeNode {
-	parent := &core.ModTreeNode{}
-	for _, part := range parts {
-		parent = &core.ModTreeNode{
-			Parent: parent,
-			Name:   part,
-		}
-	}
-	return parent
 }

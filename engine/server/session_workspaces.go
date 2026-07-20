@@ -939,7 +939,7 @@ func (srv *Server) cloneGitTree(ctx context.Context, dag *dagql.Server, cloneRef
 // may be exactly what repairs it — e.g. a dagger-module.toml module whose
 // committed generated files don't exist yet, which loads only after its SDK
 // generator runs. The skipped modules' failure messages are returned so the
-// caller can surface them (e.g. GeneratorGroup.loadFailures). Genuine engine
+// caller can surface them (e.g. Plan.loadFailures). Genuine engine
 // errors (batch resolution, arbitration, serving) stay fatal regardless.
 func (srv *Server) ensureModulesLoadedMode(ctx context.Context, client *daggerClient, filter func([]pendingModule) []pendingModule, bestEffort bool) (loadFailures []string, _ error) {
 	return srv.ensureModulesLoadedModeWithSuccess(ctx, client, filter, bestEffort, nil)
@@ -1222,9 +1222,9 @@ func (srv *Server) EnsureWorkspaceModules(ctx context.Context, include []string,
 }
 
 // canonicalWorkspaceModuleName kebab-normalizes a name or pattern segment for
-// comparison, matching the include matchers (ModTreePath.Glob/CliCase) and CLI
-// command names: "myMod", "my-mod", "MyMod" are the same module. Glob
-// metacharacters survive, so a glob never equals a module name.
+// comparison, matching artifact selector and CLI command names: "myMod",
+// "my-mod", and "MyMod" are the same module. Glob metacharacters survive, so a
+// glob never equals a module name.
 func canonicalWorkspaceModuleName(name string) string {
 	return strcase.ToKebab(name)
 }

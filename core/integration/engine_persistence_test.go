@@ -583,19 +583,19 @@ head -c 32 /dev/urandom | sha256sum | cut -d' ' -f1 > /work/random.txt
 			return strings.TrimSpace(randomContents)
 		}
 
-		runGeneratorGroup := func(ctx context.Context, t *testctx.T, engineClient *dagger.Client) {
+		runGeneratePlan := func(ctx context.Context, t *testctx.T, engineClient *dagger.Client) {
 			t.Helper()
 
-			run := engineClient.
+			plan := engineClient.
 				CurrentWorkspace().
-				Generators(dagger.WorkspaceGeneratorsOpts{Include: []string{"generate-files"}}).
-				Run()
-
-			empty, err := run.IsEmpty(ctx)
-			require.NoError(t, err)
-			require.False(t, empty)
-
-			changesEmpty, err := run.Changes().IsEmpty(ctx)
+				Artifacts().
+				Plan(
+					dagger.VerbGenerate,
+					dagger.ArtifactsPlanOpts{
+						Include: []dagger.FunctionPattern{"generate-files"},
+					},
+				)
+			changesEmpty, err := plan.Changes().IsEmpty(ctx)
 			require.NoError(t, err)
 			require.False(t, changesEmpty)
 		}
@@ -604,7 +604,7 @@ head -c 32 /dev/urandom | sha256sum | cut -d' ' -f1 > /work/random.txt
 		t.Cleanup(func() { stopEngine(ctx, t, upstreamSvcA, engineSvcA, engineClientA) })
 
 		randomA := runRandom(ctx, t, engineClientA)
-		runGeneratorGroup(ctx, t, engineClientA)
+		runGeneratePlan(ctx, t, engineClientA)
 		stopEngine(ctx, t, upstreamSvcA, engineSvcA, engineClientA)
 		upstreamSvcA = nil
 		engineSvcA = nil

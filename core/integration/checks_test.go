@@ -10,6 +10,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -71,7 +72,7 @@ func (ChecksSuite) TestChecksDirectSDK(ctx context.Context, t *testctx.T) {
 			out, err := modGen.
 				With(daggerExec("check", "-l")).
 				CombinedOutput(ctx)
-			require.NoError(t, err)
+			require.NoError(t, err, out)
 			require.Contains(t, out, "passing-check")
 			require.Contains(t, out, "failing-check")
 			require.Contains(t, out, "passing-container")
@@ -80,14 +81,14 @@ func (ChecksSuite) TestChecksDirectSDK(ctx context.Context, t *testctx.T) {
 			require.Contains(t, out, "test:unit")
 			// run a specific passing check
 			out, err = modGen.
-				With(daggerExec("--progress=report", "check", "passing-*")).
+				With(daggerExec("--progress=report", "check", "passing*")).
 				CombinedOutput(ctx)
 			require.NoError(t, err)
 			require.Regexp(t, `passing-check.*OK`, out)
 			require.Regexp(t, `passing-container.*OK`, out)
 			// run a specific failing check
 			out, err = modGen.
-				With(daggerExecFail("--progress=report", "check", "failing-*")).
+				With(daggerExecFail("--progress=report", "check", "failing*")).
 				CombinedOutput(ctx)
 			require.Regexp(t, "failing-check.*ERROR", out)
 			require.Regexp(t, "failing-container.*ERROR", out)
@@ -164,106 +165,6 @@ func (ChecksSuite) TestChecksViaLegacyBlueprintConfig(ctx context.Context, t *te
 	}
 }
 
-func (ChecksSuite) TestChecksGenerateAsCheck(ctx context.Context, t *testctx.T) {
-	c := connect(ctx, t)
-	modGen, err := checksTestEnv(t, c)
-	require.NoError(t, err)
-	modGen = modGen.WithWorkdir("hello-with-generate-checks")
-
-	t.Run("list includes generator checks inline", func(ctx context.Context, t *testctx.T) {
-		out, err := modGen.
-			With(daggerExec("check", "-l")).
-			CombinedOutput(ctx)
-		require.NoError(t, err)
-		require.Contains(t, out, "passing-check")
-		require.Contains(t, out, "empty-generate")
-		require.Contains(t, out, "non-empty-generate")
-		require.Regexp(t, `passing-check\s+check\s+`, out)
-		require.Regexp(t, `empty-generate\s+generate\s+`, out)
-		require.NotContains(t, out, "Generators")
-	})
-
-	t.Run("list with no-generate excludes generators", func(ctx context.Context, t *testctx.T) {
-		out, err := modGen.
-			With(daggerExec("check", "-l", "--no-generate")).
-			CombinedOutput(ctx)
-		require.NoError(t, err)
-		// Should only list regular checks, no Generators section
-		require.Contains(t, out, "passing-check")
-		require.NotContains(t, out, "Generators")
-		require.NotContains(t, out, "empty-generate")
-		require.NotContains(t, out, "non-empty-generate")
-	})
-
-	t.Run("list with generate only includes generators", func(ctx context.Context, t *testctx.T) {
-		out, err := modGen.
-			With(daggerExec("check", "-l", "--generate")).
-			CombinedOutput(ctx)
-		require.NoError(t, err)
-		// Should only list generators (rendered as generate-type rows), no regular checks
-		require.Regexp(t, `empty-generate\s+generate\s+`, out)
-		require.Regexp(t, `non-empty-generate\s+generate\s+`, out)
-		require.NotContains(t, out, "passing-check")
-	})
-
-	t.Run("run empty generator passes", func(ctx context.Context, t *testctx.T) {
-		out, err := modGen.
-			With(daggerExec("--progress=report", "check", "empty-generate")).
-			CombinedOutput(ctx)
-		require.NoError(t, err)
-		require.Regexp(t, `empty-generate.*OK`, out)
-	})
-
-	t.Run("run non-empty generator fails", func(ctx context.Context, t *testctx.T) {
-		out, err := modGen.
-			With(daggerExecFail("--progress=report", "check", "non-empty-generate")).
-			CombinedOutput(ctx)
-		require.NoError(t, err)
-		require.Regexp(t, `non-empty-generate.*ERROR`, out)
-	})
-
-	t.Run("run all includes generators", func(ctx context.Context, t *testctx.T) {
-		// Should fail because non-empty-generate produces changes
-		out, err := modGen.
-			With(daggerExecFail("--progress=report", "check")).
-			CombinedOutput(ctx)
-		require.NoError(t, err)
-		require.Regexp(t, `passing-check.*OK`, out)
-		require.Regexp(t, `empty-generate.*OK`, out)
-		require.Regexp(t, `non-empty-generate.*ERROR`, out)
-	})
-
-	t.Run("run with no-generate skips generators", func(ctx context.Context, t *testctx.T) {
-		// Should pass because only passing-check runs
-		out, err := modGen.
-			With(daggerExec("--progress=report", "check", "--no-generate")).
-			CombinedOutput(ctx)
-		require.NoError(t, err)
-		require.Regexp(t, `passing-check.*OK`, out)
-		require.NotContains(t, out, "empty-generate")
-		require.NotContains(t, out, "non-empty-generate")
-	})
-
-	t.Run("run with generate skips annotated checks", func(ctx context.Context, t *testctx.T) {
-		// Should fail because non-empty-generate produces changes
-		out, err := modGen.
-			With(daggerExecFail("--progress=report", "check", "--generate")).
-			CombinedOutput(ctx)
-		require.NoError(t, err)
-		require.Regexp(t, `empty-generate.*OK`, out)
-		require.Regexp(t, `non-empty-generate.*ERROR`, out)
-		require.NotContains(t, out, "passing-check")
-	})
-
-	t.Run("no-generate and generate are mutually exclusive", func(ctx context.Context, t *testctx.T) {
-		out, err := modGen.
-			With(daggerExecFail("check", "--no-generate", "--generate")).
-			CombinedOutput(ctx)
-		require.NoError(t, err)
-		require.Contains(t, out, "if any flags in the group [no-generate generate] are set none of the others can be")
-	})
-}
-
 func (ChecksSuite) TestChecksSkipFlag(ctx context.Context, t *testctx.T) {
 	c := connect(ctx, t)
 	modGen, err := checksTestEnv(t, c)
@@ -313,7 +214,6 @@ func (ChecksSuite) TestChecksSkipFlag(ctx context.Context, t *testctx.T) {
 	})
 
 	t.Run("run with skip excludes matching checks", func(ctx context.Context, t *testctx.T) {
-		// Should pass because the failing checks are skipped
 		out, err := modGen.
 			With(daggerExec("--progress=report", "check", "--skip", "failing-*")).
 			CombinedOutput(ctx)
@@ -337,53 +237,10 @@ check.skip = ["failing-check", "failing-container"]
 
 	out, err := ctr.With(daggerExec("check", "-l")).CombinedOutput(ctx)
 	require.NoError(t, err)
-	require.Contains(t, out, "hello-with-checks:passing-check")
-	require.Contains(t, out, "hello-with-checks:passing-container")
-	require.NotContains(t, out, "hello-with-checks:failing-check")
-	require.NotContains(t, out, "hello-with-checks:failing-container")
-}
-
-func (ChecksSuite) TestWorkspaceCheckGeneratedSetting(ctx context.Context, t *testctx.T) {
-	c := connect(ctx, t)
-	modGen, err := checksTestEnv(t, c)
-	require.NoError(t, err)
-
-	// check-generated = false skips generate-as-checks by default.
-	base := modGen.WithNewFile("dagger.toml", `check-generated = false
-
-[modules.hello-with-generate-checks]
-source = "hello-with-generate-checks"
-`)
-
-	t.Run("list excludes generators by default", func(ctx context.Context, t *testctx.T) {
-		out, err := base.With(daggerExec("check", "-l")).CombinedOutput(ctx)
-		require.NoError(t, err, out)
-		require.Contains(t, out, "hello-with-generate-checks:passing-check")
-		require.NotContains(t, out, "empty-generate")
-		require.NotContains(t, out, "non-empty-generate")
-	})
-
-	t.Run("run passes by default despite stale generator", func(ctx context.Context, t *testctx.T) {
-		out, err := base.With(daggerExec("--progress=report", "check")).CombinedOutput(ctx)
-		require.NoError(t, err, out)
-		require.Regexp(t, `passing-check.*OK`, out)
-		require.NotContains(t, out, "non-empty-generate")
-	})
-
-	t.Run("--generate flag overrides the config", func(ctx context.Context, t *testctx.T) {
-		out, err := base.With(daggerExec("check", "-l", "--generate")).CombinedOutput(ctx)
-		require.NoError(t, err, out)
-		require.Regexp(t, `empty-generate\s+generate\s+`, out)
-		require.Regexp(t, `non-empty-generate\s+generate\s+`, out)
-		require.NotContains(t, out, "passing-check")
-	})
-
-	t.Run("--no-generate flag matches the config default", func(ctx context.Context, t *testctx.T) {
-		out, err := base.With(daggerExec("check", "-l", "--no-generate")).CombinedOutput(ctx)
-		require.NoError(t, err, out)
-		require.Contains(t, out, "hello-with-generate-checks:passing-check")
-		require.NotContains(t, out, "empty-generate")
-	})
+	require.Contains(t, out, "passing-check")
+	require.Contains(t, out, "passing-container")
+	require.NotContains(t, out, "failing-check")
+	require.NotContains(t, out, "failing-container")
 }
 
 func (ChecksSuite) TestWorkspaceCheckSkipRemote(ctx context.Context, t *testctx.T) {
@@ -401,10 +258,10 @@ check.skip = ["failing-check", "failing-container"]
 		With(workspaceSelectionDaggerExec("-W", remoteRef, "check", "-l")).
 		CombinedOutput(ctx)
 	require.NoError(t, err, out)
-	require.Contains(t, out, "hello-with-checks:passing-check")
-	require.Contains(t, out, "hello-with-checks:passing-container")
-	require.NotContains(t, out, "hello-with-checks:failing-check")
-	require.NotContains(t, out, "hello-with-checks:failing-container")
+	require.Contains(t, out, "passing-check")
+	require.Contains(t, out, "passing-container")
+	require.NotContains(t, out, "failing-check")
+	require.NotContains(t, out, "failing-container")
 }
 
 func (ChecksSuite) TestChecksFailFast(ctx context.Context, t *testctx.T) {
@@ -412,7 +269,7 @@ func (ChecksSuite) TestChecksFailFast(ctx context.Context, t *testctx.T) {
 	modGen, err := checksTestEnv(t, c)
 	require.NoError(t, err)
 	modGen = modGen.WithWorkdir("hello-with-checks")
-	// run all checks with --failfast; should fail because there are failing checks
+
 	out, err := modGen.
 		With(daggerExecFail("--progress=report", "check", "--failfast")).
 		CombinedOutput(ctx)
@@ -446,25 +303,234 @@ source = "../%s"
 				With(daggerExec("check", "-l")).
 				CombinedOutput(ctx)
 			require.NoError(t, err)
-			require.Contains(t, out, tc.path+":passing-check")
-			require.Contains(t, out, tc.path+":failing-check")
-			require.Contains(t, out, tc.path+":test:lint")
-			require.Contains(t, out, tc.path+":test:unit")
+			require.Contains(t, out, "passing-check")
+			require.Contains(t, out, "failing-check")
+			require.Contains(t, out, "test:lint")
+			require.Contains(t, out, "test:unit")
 			// run a specific passing check
-			_, err = modGen.
+			out, err = modGen.
 				With(daggerExec("--progress=report", "check", tc.path+":passing-check")).
 				CombinedOutput(ctx)
 			require.NoError(t, err)
 			// run a specific failing check
-			_, err = modGen.
+			out, err = modGen.
 				With(daggerExecFail("--progress=report", "check", tc.path+":failing-check")).
 				CombinedOutput(ctx)
 			require.NoError(t, err)
 			// run all checks
-			_, err = modGen.
+			out, err = modGen.
 				With(daggerExecFail("--progress=report", "check")).
 				CombinedOutput(ctx)
 			require.NoError(t, err)
 		})
 	}
+}
+
+func (ChecksSuite) TestDangExecutionPlans(ctx context.Context, t *testctx.T) {
+	c := connect(ctx, t)
+	mod := workspaceBase(t, c).
+		With(initStandaloneDangModule("plans-fixture", `
+type PlansFixture {
+  pub state: Nested!
+
+  new() {
+    self.state = Nested()
+    self
+  }
+
+  pub passing: Void @check {
+    null
+  }
+
+  pub nested: Nested! {
+    Nested()
+  }
+
+  pub configured(required: String!): Void @check {
+    null
+  }
+
+  pub generateFile: Changeset! @generate {
+    directory
+      .withNewFile("generated.txt", "generated by artifact plan")
+      .changes(directory)
+  }
+}
+
+type Nested {
+  pub passing: Void @check {
+    null
+  }
+}
+`))
+
+	out, err := mod.
+		With(daggerExec("check", "-l", "--type=plans-fixture")).
+		CombinedOutput(ctx)
+	require.NoError(t, err, out)
+	require.Contains(t, out, "passing")
+	require.Contains(t, out, "nested:passing")
+	require.Contains(t, out, "state:passing")
+	require.NotContains(t, out, "configured")
+
+	out, err = mod.With(daggerQuery(`{
+		currentWorkspace {
+			artifacts {
+				filterCoordinates(dimension: "type", values: ["plans-fixture"]) {
+					items {
+						actions(verbs: [CHECK]) {
+							verb
+							functionPath
+							collectionBatched
+							target { items { coordinates } }
+							after
+						}
+						action(verb: CHECK, functionPath: ["nested", "passing"]) {
+							verb
+							functionPath
+							collectionBatched
+							target { items { coordinates } }
+							after
+							withAfter(actions: []) { after }
+							run
+						}
+					}
+					plan(verb: CHECK, include: ["nested:*"]) {
+						verb
+						nodes {
+							functionPath
+							target { items { coordinates } }
+						}
+						run
+					}
+				}
+			}
+		}
+	}`)).Stdout(ctx)
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"currentWorkspace": {
+			"artifacts": {
+				"filterCoordinates": {
+					"items": [{
+						"actions": [{
+							"verb": "CHECK",
+							"functionPath": ["nested", "passing"],
+							"collectionBatched": false,
+							"target": {"items": [{"coordinates": ["plans-fixture"]}]},
+							"after": []
+						}, {
+							"verb": "CHECK",
+							"functionPath": ["passing"],
+							"collectionBatched": false,
+							"target": {"items": [{"coordinates": ["plans-fixture"]}]},
+							"after": []
+						}, {
+							"verb": "CHECK",
+							"functionPath": ["state", "passing"],
+							"collectionBatched": false,
+							"target": {"items": [{"coordinates": ["plans-fixture"]}]},
+							"after": []
+						}],
+						"action": {
+							"verb": "CHECK",
+							"functionPath": ["nested", "passing"],
+							"collectionBatched": false,
+							"target": {"items": [{"coordinates": ["plans-fixture"]}]},
+							"after": [],
+							"withAfter": {"after": []},
+							"run": null
+						}
+					}],
+					"plan": {
+						"verb": "CHECK",
+						"nodes": [{
+							"functionPath": ["nested", "passing"],
+							"target": {"items": [{"coordinates": ["plans-fixture"]}]}
+						}],
+						"run": null
+					}
+				}
+			}
+		}
+		}`, out)
+
+	actionIDJSON, err := mod.With(daggerQuery(`{
+		currentWorkspace {
+			artifacts {
+				filterCoordinates(dimension: "type", values: ["plans-fixture"]) {
+					items {
+						action(verb: CHECK, functionPath: ["passing"]) {
+							id
+						}
+					}
+				}
+			}
+		}
+	}`)).Stdout(ctx)
+	require.NoError(t, err)
+	var actionIDResult struct {
+		CurrentWorkspace struct {
+			Artifacts struct {
+				Filtered struct {
+					Items []struct {
+						Action struct {
+							ID string
+						}
+					}
+				} `json:"filterCoordinates"`
+			}
+		}
+	}
+	require.NoError(t, json.Unmarshal([]byte(actionIDJSON), &actionIDResult))
+	require.Len(t, actionIDResult.CurrentWorkspace.Artifacts.Filtered.Items, 1)
+	actionID := actionIDResult.CurrentWorkspace.Artifacts.Filtered.Items[0].Action.ID
+	require.NotEmpty(t, actionID)
+
+	out, err = mod.With(daggerQuery(fmt.Sprintf(`{
+		currentWorkspace {
+			artifacts {
+				filterCoordinates(dimension: "type", values: ["plans-fixture"]) {
+					items {
+						action(verb: CHECK, functionPath: ["passing"]) {
+							withAfter(actions: [%q]) {
+								run
+							}
+						}
+					}
+				}
+			}
+		}
+	}`, actionID))).CombinedOutput(ctx)
+	require.Error(t, err, out)
+
+	out, err = mod.
+		With(daggerExec("check", "--plan", "--type=plans-fixture", "nested:*")).
+		CombinedOutput(ctx)
+	require.NoError(t, err, out)
+	require.Contains(t, out, "nested:passing")
+	require.NotContains(t, out, "\tpassing\t")
+
+	out, err = mod.
+		With(daggerExec("--progress=report", "check", "--type=plans-fixture", "passing")).
+		CombinedOutput(ctx)
+	require.NoError(t, err, out)
+	require.Regexp(t, `passing.*OK`, out)
+
+	out, err = mod.
+		With(daggerExec("generate", "-l", "--type=plans-fixture")).
+		CombinedOutput(ctx)
+	require.NoError(t, err, out)
+	require.Contains(t, out, "generate-file")
+
+	mod = mod.With(daggerExec(
+		"--progress=plain",
+		"generate",
+		"--type=plans-fixture",
+		"generate-file",
+		"-y",
+	))
+	contents, err := mod.File("generated.txt").Contents(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "generated by artifact plan", contents)
 }

@@ -77,26 +77,6 @@ func (s environmentSchema) Install(srv *dagql.Server) {
 				dagql.Arg("name").Doc("The name of the binding"),
 				dagql.Arg("description").Doc("The description of the output"),
 			),
-		dagql.Func("checks", s.envChecks).
-			Experimental("Checks API is highly experimental and may be removed or replaced entirely.").
-			Doc("Return all checks defined by the installed modules").
-			Args(
-				dagql.Arg("include").Doc("Only include checks matching the specified patterns"),
-				dagql.Arg("noGenerate").Doc("When true, only return annotated check functions; exclude generate-as-checks").
-					View(AfterVersion("v0.21.0")),
-			),
-		dagql.Func("check", s.envCheck).
-			Experimental("Checks API is highly experimental and may be removed or replaced entirely.").
-			Doc("Return the check with the given name from the installed modules. Must match exactly one check.").
-			Args(
-				dagql.Arg("name").Doc("The name of the check to retrieve"),
-			),
-		dagql.Func("services", s.envServices).
-			Experimental("Services API is highly experimental and may be removed or replaced entirely.").
-			Doc("Return all services defined by the installed modules").
-			Args(
-				dagql.Arg("include").Doc("Only include services matching the specified patterns"),
-			),
 	}.Install(srv)
 	dagql.Fields[*core.Binding]{
 		dagql.Func("name", s.bindingName).
@@ -350,35 +330,4 @@ func (s environmentSchema) bindingAsString(ctx context.Context, b *core.Binding,
 
 func (s environmentSchema) bindingIsNull(ctx context.Context, b *core.Binding, args struct{}) (bool, error) {
 	return b.Value == nil, nil
-}
-
-func (s environmentSchema) envChecks(ctx context.Context, env *core.Env, args struct {
-	Include    dagql.Optional[dagql.ArrayInput[dagql.String]]
-	NoGenerate dagql.Optional[dagql.Boolean]
-}) (*core.CheckGroup, error) {
-	var include []string
-	if args.Include.Valid {
-		for _, pattern := range args.Include.Value {
-			include = append(include, pattern.String())
-		}
-	}
-	return env.Checks(ctx, include, args.NoGenerate.GetOr(false).Bool())
-}
-
-func (s environmentSchema) envCheck(ctx context.Context, env *core.Env, args struct {
-	Name string
-}) (*core.Check, error) {
-	return env.Check(ctx, args.Name)
-}
-
-func (s environmentSchema) envServices(ctx context.Context, env *core.Env, args struct {
-	Include dagql.Optional[dagql.ArrayInput[dagql.String]]
-}) (*core.UpGroup, error) {
-	var include []string
-	if args.Include.Valid {
-		for _, pattern := range args.Include.Value {
-			include = append(include, pattern.String())
-		}
-	}
-	return env.Services(ctx, include)
 }

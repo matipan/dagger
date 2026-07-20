@@ -91,8 +91,7 @@ func (base *CoreSchemaBase) viewState(ctx context.Context, view call.View) (*cor
 	}
 	srv.View = view
 
-	coreMod := base.CoreMod(view)
-	typedefs, err := coreMod.buildTypeDefs(ctx, srv)
+	typedefs, err := buildTypeDefsFromSchema(ctx, srv)
 	if err != nil {
 		return nil, err
 	}
@@ -198,9 +197,7 @@ func (m *CoreMod) Install(ctx context.Context, dag *dagql.Server, _ ...core.Inst
 		&schemaToolsSchema{},
 		&envfileSchema{},
 		&addressSchema{},
-		&checksSchema{},
-		&generatorsSchema{},
-		&upSchema{},
+		&plansSchema{},
 		&workspaceSchema{},
 		&artifactsSchema{},
 	} {
@@ -346,12 +343,28 @@ func buildCoreTypeDefFunctions(
 		if err != nil {
 			return nil, false, err
 		}
+		var sourceModuleName dagql.Optional[dagql.String]
+		if introspectionType.Name == "Query" {
+			if sourceMap := introspectionField.Directives.SourceMap(); sourceMap != nil {
+				sourceModuleName = core.OptSourceModuleName(sourceMap.Module)
+			}
+			if objType != nil {
+				if fieldSpec, ok := objType.FieldSpec(introspectionField.Name, dag.View); ok {
+					if fieldSpec.NoTelemetry {
+						sourceModuleName = dagql.Optional[dagql.String]{}
+					} else if fieldSpec.Module != nil {
+						sourceModuleName = core.OptSourceModuleName(fieldSpec.Module.Name)
+					}
+				}
+			}
+		}
 		var fn dagql.ObjectResult[*core.Function]
 		if err := dag.Select(ctx, dag.Root(), &fn, dagql.Selector{
 			Field: "__function",
 			Args: []dagql.NamedInput{
 				{Name: "name", Value: dagql.String(introspectionField.Name)},
 				{Name: "returnType", Value: rtTypeID},
+				{Name: "sourceModuleName", Value: sourceModuleName},
 			},
 		}); err != nil {
 			return nil, false, err
@@ -369,6 +382,21 @@ func buildCoreTypeDefFunctions(
 				Field: "withDeprecated",
 				Args:  []dagql.NamedInput{{Name: "reason", Value: core.OptString(introspectionField.DeprecationReason)}},
 			}); err != nil {
+				return nil, false, err
+			}
+		}
+		for _, directive := range []struct {
+			name     string
+			selector string
+		}{
+			{name: "check", selector: "withCheck"},
+			{name: "generate", selector: "withGenerator"},
+			{name: "up", selector: "withUp"},
+		} {
+			if introspectionField.Directives.Directive(directive.name) == nil {
+				continue
+			}
+			if err := dag.Select(ctx, fn, &fn, dagql.Selector{Field: directive.selector}); err != nil {
 				return nil, false, err
 			}
 		}
@@ -440,12 +468,17 @@ func buildCoreObjectLikeTypeDef[T dagql.Typed](
 	wrapArg string,
 ) (dagql.ObjectResult[*core.TypeDef], bool, error) {
 	var zero dagql.ObjectResult[*core.TypeDef]
+	var sourceModuleName dagql.Optional[dagql.String]
+	if sourceMap := introspectionType.Directives.SourceMap(); sourceMap != nil {
+		sourceModuleName = core.OptSourceModuleName(sourceMap.Module)
+	}
 	var obj dagql.ObjectResult[T]
 	if err := dag.Select(ctx, dag.Root(), &obj, dagql.Selector{
 		Field: baseSelector,
 		Args: []dagql.NamedInput{
 			{Name: "name", Value: dagql.String(introspectionType.Name)},
 			{Name: "description", Value: dagql.String(introspectionType.Description)},
+			{Name: "sourceModuleName", Value: sourceModuleName},
 		},
 	}); err != nil {
 		return zero, false, err
@@ -482,7 +515,7 @@ func buildCoreObjectLikeTypeDef[T dagql.Typed](
 }
 
 //nolint:gocyclo // intrinsically long state machine; refactoring would hurt clarity
-func (m *CoreMod) buildTypeDefs(ctx context.Context, dag *dagql.Server) (dagql.ObjectResultArray[*core.TypeDef], error) {
+func buildTypeDefsFromSchema(ctx context.Context, dag *dagql.Server) (dagql.ObjectResultArray[*core.TypeDef], error) {
 	dagqlSchema := dagqlintrospection.WrapSchema(dag.Schema())
 	schema := &introspection.Schema{}
 	if queryName := dagqlSchema.QueryType().Name(); queryName != nil {
