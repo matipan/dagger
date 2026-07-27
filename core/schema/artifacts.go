@@ -131,14 +131,23 @@ func workspaceArtifactsSnapshot(ctx context.Context) (*core.Artifacts, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get workspace schema: %w", err)
 	}
+	typeDefs, err := served.TypeDefs(ctx, dag)
+	if err != nil {
+		return nil, fmt.Errorf("get workspace type definitions: %w", err)
+	}
+
 	// Entrypoint schemas replace the module constructor with flattened proxy
 	// fields. Artifact discovery needs the canonical module root instead.
 	dag = dag.Canonical()
-	typeDefs, err := buildTypeDefsFromSchema(ctx, dag)
+	typeDefs, err = withCurrentQueryTypeDef(ctx, dag, typeDefs)
 	if err != nil {
-		return nil, fmt.Errorf("introspect workspace schema: %w", err)
+		return nil, fmt.Errorf("get workspace query type definition: %w", err)
 	}
-	return core.NewArtifactsFromTypeDefs(typeDefs), nil
+	typeDefs, err = expandTypeDefClosure(ctx, dag, typeDefs)
+	if err != nil {
+		return nil, fmt.Errorf("expand workspace type definitions: %w", err)
+	}
+	return core.NewArtifacts(ctx, dag, typeDefs)
 }
 
 func (s *artifactsSchema) filterDimension(
@@ -167,7 +176,11 @@ func (s *artifactsSchema) dimensions(
 	artifacts *core.Artifacts,
 	_ struct{},
 ) ([]*core.ArtifactDimension, error) {
-	materialized, _, err := materializeArtifacts(ctx, artifacts, nil, false)
+	// Dimension discovery feeds CLI argument parsing before the requested
+	// operation is known. Keep it best-effort so generate can bootstrap modules
+	// whose committed runtime files do not exist yet; plan compilation records
+	// the same load failures and applies the verb-specific strictness.
+	materialized, _, err := materializeArtifacts(ctx, artifacts, nil, true)
 	if err != nil {
 		return nil, err
 	}

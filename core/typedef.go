@@ -744,15 +744,16 @@ func (arg FunctionArg) Directives() []*ast.Directive {
 }
 
 type TypeDef struct {
-	Name        string      `field:"true" doc:"The canonical non-optional name of the type." doNotCache:"simple field selection"`
-	Kind        TypeDefKind `field:"true" doc:"The kind of type this is (e.g. primitive, list, object)." doNotCache:"simple field selection"`
-	Optional    bool        `field:"true" doc:"Whether this type can be set to null. Defaults to false." doNotCache:"simple field selection"`
-	AsList      dagql.Nullable[dagql.ObjectResult[*ListTypeDef]]
-	AsObject    dagql.Nullable[dagql.ObjectResult[*ObjectTypeDef]]
-	AsInterface dagql.Nullable[dagql.ObjectResult[*InterfaceTypeDef]]
-	AsInput     dagql.Nullable[dagql.ObjectResult[*InputTypeDef]]
-	AsScalar    dagql.Nullable[dagql.ObjectResult[*ScalarTypeDef]]
-	AsEnum      dagql.Nullable[dagql.ObjectResult[*EnumTypeDef]]
+	Name         string      `field:"true" doc:"The canonical non-optional name of the type." doNotCache:"simple field selection"`
+	Kind         TypeDefKind `field:"true" doc:"The kind of type this is (e.g. primitive, list, object)." doNotCache:"simple field selection"`
+	Optional     bool        `field:"true" doc:"Whether this type can be set to null. Defaults to false." doNotCache:"simple field selection"`
+	AsList       dagql.Nullable[dagql.ObjectResult[*ListTypeDef]]
+	AsObject     dagql.Nullable[dagql.ObjectResult[*ObjectTypeDef]]
+	AsCollection dagql.Nullable[*CollectionTypeDef] `field:"true" doc:"If kind is OBJECT and the object is a collection, the collection-specific type definition. If the type is not a collection, this will be null."`
+	AsInterface  dagql.Nullable[dagql.ObjectResult[*InterfaceTypeDef]]
+	AsInput      dagql.Nullable[dagql.ObjectResult[*InputTypeDef]]
+	AsScalar     dagql.Nullable[dagql.ObjectResult[*ScalarTypeDef]]
+	AsEnum       dagql.Nullable[dagql.ObjectResult[*EnumTypeDef]]
 }
 
 var _ dagql.PersistedObject = (*TypeDef)(nil)
@@ -761,6 +762,9 @@ var _ dagql.HasDependencyResults = (*TypeDef)(nil)
 
 func (typeDef TypeDef) Clone() *TypeDef {
 	cp := typeDef
+	if typeDef.AsCollection.Valid {
+		cp.AsCollection.Value = typeDef.AsCollection.Value.Clone()
+	}
 	return &cp
 }
 
@@ -961,7 +965,10 @@ func (typeDef *TypeDef) ToTyped() dagql.Typed {
 	case TypeDefKindList:
 		typed = dagql.DynamicArrayOutput{Elem: typeDef.AsList.Value.Self().ElementTypeDef.Self().ToTyped()}
 	case TypeDefKindObject:
-		typed = &ModuleObject{TypeDef: typeDef.AsObject.Value.Self()}
+		typed = &ModuleObject{
+			TypeDef:    typeDef.AsObject.Value.Self(),
+			Collection: typeDef.AsCollection.Value,
+		}
 	case TypeDefKindInterface:
 		typed = &interfaceTypedMarker{name: typeDef.AsInterface.Value.Self().Name}
 	case TypeDefKindVoid:
@@ -1069,6 +1076,38 @@ func (typeDef *TypeDef) WithObjectTypeDef(obj dagql.ObjectResult[*ObjectTypeDef]
 	return typeDef.syncName()
 }
 
+func (typeDef *TypeDef) WithCollection() *TypeDef {
+	typeDef = typeDef.Clone()
+	if !typeDef.AsCollection.Valid {
+		typeDef.AsCollection = dagql.NonNull(&CollectionTypeDef{})
+	}
+	return typeDef
+}
+
+func (typeDef *TypeDef) WithCollectionKeys(name string) (*TypeDef, error) {
+	if !typeDef.AsCollection.Valid {
+		return nil, fmt.Errorf("collection keys override requires a collection type")
+	}
+	if typeDef.AsCollection.Value.KeysFieldNameOverride != "" {
+		return nil, fmt.Errorf("collection keys override is already set")
+	}
+	typeDef = typeDef.Clone()
+	typeDef.AsCollection.Value.KeysFieldNameOverride = gqlFieldName(name)
+	return typeDef, nil
+}
+
+func (typeDef *TypeDef) WithCollectionGet(name string) (*TypeDef, error) {
+	if !typeDef.AsCollection.Valid {
+		return nil, fmt.Errorf("collection get override requires a collection type")
+	}
+	if typeDef.AsCollection.Value.GetFunctionNameOverride != "" {
+		return nil, fmt.Errorf("collection get override is already set")
+	}
+	typeDef = typeDef.Clone()
+	typeDef.AsCollection.Value.GetFunctionNameOverride = gqlFieldName(name)
+	return typeDef, nil
+}
+
 func (typeDef *TypeDef) WithInterface(iface dagql.ObjectResult[*InterfaceTypeDef]) *TypeDef {
 	typeDef = typeDef.WithKind(TypeDefKindInterface)
 	typeDef.AsInterface = dagql.NonNull(iface)
@@ -1174,6 +1213,42 @@ type ObjectTypeDef struct {
 	// Set by Module.TypeDefs() so downstream consumers don't need
 	// name-matching heuristics.
 	IsMainObject bool
+}
+
+// CollectionTypeDef describes collection semantics layered on an object type.
+type CollectionTypeDef struct {
+	KeyType   *TypeDef `field:"true" doc:"The type accepted by get(key) and subset(keys: ...)."`
+	ValueType *TypeDef `field:"true" doc:"The type returned by get() and enumerated by list."`
+	BatchType *TypeDef `field:"true" doc:"The synthetic batch type exposed for collection-level operations, if any."`
+
+	// Below are not in the public API.
+	KeysFieldNameOverride   string
+	GetFunctionNameOverride string
+	KeysFieldName           string
+	GetFunctionName         string
+	GetArgName              string
+}
+
+func (*CollectionTypeDef) Type() *ast.Type {
+	return &ast.Type{NamedType: "CollectionTypeDef", NonNull: true}
+}
+
+func (*CollectionTypeDef) TypeDescription() string {
+	return "A definition of collection semantics layered on top of an object type."
+}
+
+func (typeDef CollectionTypeDef) Clone() *CollectionTypeDef {
+	cp := typeDef
+	if typeDef.KeyType != nil {
+		cp.KeyType = typeDef.KeyType.Clone()
+	}
+	if typeDef.ValueType != nil {
+		cp.ValueType = typeDef.ValueType.Clone()
+	}
+	if typeDef.BatchType != nil {
+		cp.BatchType = typeDef.BatchType.Clone()
+	}
+	return &cp
 }
 
 func (obj ObjectTypeDef) functions() iter.Seq[*Function] {
@@ -2685,14 +2760,26 @@ type persistedFunction struct {
 }
 
 type persistedTypeDef struct {
-	Kind                TypeDefKind `json:"kind,omitempty"`
-	Optional            bool        `json:"optional,omitempty"`
-	AsListResultID      uint64      `json:"asListResultID,omitempty"`
-	AsObjectResultID    uint64      `json:"asObjectResultID,omitempty"`
-	AsInterfaceResultID uint64      `json:"asInterfaceResultID,omitempty"`
-	AsInputResultID     uint64      `json:"asInputResultID,omitempty"`
-	AsScalarResultID    uint64      `json:"asScalarResultID,omitempty"`
-	AsEnumResultID      uint64      `json:"asEnumResultID,omitempty"`
+	Kind                TypeDefKind                 `json:"kind,omitempty"`
+	Optional            bool                        `json:"optional,omitempty"`
+	AsListResultID      uint64                      `json:"asListResultID,omitempty"`
+	AsObjectResultID    uint64                      `json:"asObjectResultID,omitempty"`
+	AsCollection        *persistedCollectionTypeDef `json:"asCollection,omitempty"`
+	AsInterfaceResultID uint64                      `json:"asInterfaceResultID,omitempty"`
+	AsInputResultID     uint64                      `json:"asInputResultID,omitempty"`
+	AsScalarResultID    uint64                      `json:"asScalarResultID,omitempty"`
+	AsEnumResultID      uint64                      `json:"asEnumResultID,omitempty"`
+}
+
+type persistedCollectionTypeDef struct {
+	KeyType                 *persistedTypeDef `json:"keyType,omitempty"`
+	ValueType               *persistedTypeDef `json:"valueType,omitempty"`
+	BatchType               *persistedTypeDef `json:"batchType,omitempty"`
+	KeysFieldNameOverride   string            `json:"keysFieldNameOverride,omitempty"`
+	GetFunctionNameOverride string            `json:"getFunctionNameOverride,omitempty"`
+	KeysFieldName           string            `json:"keysFieldName,omitempty"`
+	GetFunctionName         string            `json:"getFunctionName,omitempty"`
+	GetArgName              string            `json:"getArgName,omitempty"`
 }
 
 type persistedObjectTypeDef struct {
@@ -2950,6 +3037,36 @@ func encodePersistedTypeDef(cache dagql.PersistedObjectCache, typeDef *TypeDef) 
 		}
 		payload.AsObjectResultID = resultID
 	}
+	if typeDef.AsCollection.Valid {
+		collection := typeDef.AsCollection.Value
+		persisted := &persistedCollectionTypeDef{
+			KeysFieldNameOverride:   collection.KeysFieldNameOverride,
+			GetFunctionNameOverride: collection.GetFunctionNameOverride,
+			KeysFieldName:           collection.KeysFieldName,
+			GetFunctionName:         collection.GetFunctionName,
+			GetArgName:              collection.GetArgName,
+		}
+		var err error
+		if collection.KeyType != nil {
+			persisted.KeyType, err = encodePersistedTypeDef(cache, collection.KeyType)
+			if err != nil {
+				return nil, fmt.Errorf("encode collection key type: %w", err)
+			}
+		}
+		if collection.ValueType != nil {
+			persisted.ValueType, err = encodePersistedTypeDef(cache, collection.ValueType)
+			if err != nil {
+				return nil, fmt.Errorf("encode collection value type: %w", err)
+			}
+		}
+		if collection.BatchType != nil {
+			persisted.BatchType, err = encodePersistedTypeDef(cache, collection.BatchType)
+			if err != nil {
+				return nil, fmt.Errorf("encode collection batch type: %w", err)
+			}
+		}
+		payload.AsCollection = persisted
+	}
 	if typeDef.AsInterface.Valid {
 		resultID, err := encodePersistedObjectRef(cache, typeDef.AsInterface.Value, "typedef interface")
 		if err != nil {
@@ -3002,6 +3119,35 @@ func decodePersistedTypeDef(ctx context.Context, dag *dagql.Server, typeDef *per
 			return nil, err
 		}
 		decoded.AsObject = dagql.NonNull(obj)
+	}
+	if typeDef.AsCollection != nil {
+		collection := &CollectionTypeDef{
+			KeysFieldNameOverride:   typeDef.AsCollection.KeysFieldNameOverride,
+			GetFunctionNameOverride: typeDef.AsCollection.GetFunctionNameOverride,
+			KeysFieldName:           typeDef.AsCollection.KeysFieldName,
+			GetFunctionName:         typeDef.AsCollection.GetFunctionName,
+			GetArgName:              typeDef.AsCollection.GetArgName,
+		}
+		var err error
+		if typeDef.AsCollection.KeyType != nil {
+			collection.KeyType, err = decodePersistedTypeDef(ctx, dag, typeDef.AsCollection.KeyType)
+			if err != nil {
+				return nil, fmt.Errorf("decode collection key type: %w", err)
+			}
+		}
+		if typeDef.AsCollection.ValueType != nil {
+			collection.ValueType, err = decodePersistedTypeDef(ctx, dag, typeDef.AsCollection.ValueType)
+			if err != nil {
+				return nil, fmt.Errorf("decode collection value type: %w", err)
+			}
+		}
+		if typeDef.AsCollection.BatchType != nil {
+			collection.BatchType, err = decodePersistedTypeDef(ctx, dag, typeDef.AsCollection.BatchType)
+			if err != nil {
+				return nil, fmt.Errorf("decode collection batch type: %w", err)
+			}
+		}
+		decoded.AsCollection = dagql.NonNull(collection)
 	}
 	if typeDef.AsInterfaceResultID != 0 {
 		iface, err := loadPersistedObjectResultByResultID[*InterfaceTypeDef](ctx, dag, typeDef.AsInterfaceResultID, "typedef interface")

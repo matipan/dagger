@@ -237,12 +237,142 @@ func TestActionsEqualUsesTargetRowSet(t *testing.T) {
 	require.False(t, actionsEqual(left, right))
 }
 
+func TestCollectionPlanBatchesShadowedActions(t *testing.T) {
+	artifacts := collectionPlanTestArtifacts(t)
+
+	plan, err := artifacts.Plan(VerbCheck, nil, nil)
+	require.NoError(t, err)
+	require.Len(t, plan.nodes, 4)
+
+	batches := map[string]*Action{}
+	var itemKeys []string
+	for _, node := range plan.nodes {
+		switch node.displayName() {
+		case "audit", "run":
+			require.True(t, node.CollectionBatched())
+			batches[node.displayName()] = node
+		case "lint":
+			require.False(t, node.CollectionBatched())
+			require.Len(t, node.target.rows, 1)
+			itemKeys = append(
+				itemKeys,
+				node.target.rows[0].coordinates[1].Value.String(),
+			)
+		default:
+			require.Failf(t, "unexpected action", "%s", node.displayName())
+		}
+	}
+
+	require.Equal(t, []string{"integration", "unit"}, itemKeys)
+	require.Contains(t, batches, "audit")
+	require.Contains(t, batches, "run")
+	for _, batch := range batches {
+		require.Len(t, batch.target.rows, 2)
+		require.Equal(
+			t,
+			`go.tests.subset(keys: ["integration","unit"]).batch`,
+			selectorPathString(batch.selectorPath),
+		)
+	}
+}
+
+func TestCollectionArtifactActionsRemainItemLocal(t *testing.T) {
+	artifacts := collectionPlanTestArtifacts(t)
+
+	for _, artifact := range artifacts.Items() {
+		actions, err := artifact.Actions([]Verb{VerbCheck})
+		require.NoError(t, err)
+		require.Equal(t, []string{"CHECK:lint", "CHECK:run"}, actionKeys(actions))
+		for _, action := range actions {
+			require.False(t, action.CollectionBatched())
+			require.Len(t, action.target.rows, 1)
+		}
+
+		run, err := artifact.Action(VerbCheck, []string{"run"})
+		require.NoError(t, err)
+		require.False(t, run.CollectionBatched())
+		require.Len(t, run.target.rows, 1)
+	}
+}
+
+func TestArtifactScopesDistinguishCollectionOccurrences(t *testing.T) {
+	left := collectionPlanTestArtifacts(t)
+	right := left.Clone()
+	right.rows = right.rows[:1]
+	left.rows = left.rows[:1]
+	right.rows[0].selectorPath[1].Field = "otherTests"
+
+	require.False(t, artifactScopesEqual(left, right))
+}
+
 func actionNames(actions []*Action) []string {
 	names := make([]string, len(actions))
 	for i, action := range actions {
 		names[i] = action.displayName()
 	}
 	return names
+}
+
+func collectionPlanTestArtifacts(t *testing.T) *Artifacts {
+	t.Helper()
+	keyType := (&TypeDef{}).WithKind(TypeDefKindString)
+	itemType := planTestObject(t, "GoTest",
+		planTestAction(t, "lint", VerbCheck),
+		planTestAction(t, "run", VerbCheck),
+	)
+	batchType := planTestObject(t, "GoTests_Batch",
+		planTestAction(t, "audit", VerbCheck),
+		planTestAction(t, "run", VerbCheck),
+	)
+	artifacts := &Artifacts{
+		dimensions: []*ArtifactDimension{
+			{
+				Name:    ArtifactTypeDimension,
+				KeyType: (&TypeDef{}).WithKind(TypeDefKindString),
+			},
+			{
+				Name:    "go-test",
+				KeyType: keyType,
+			},
+		},
+		objects: map[string]*ObjectTypeDef{
+			"GoTest":        objectTypeDef(itemType.Self()),
+			"GoTests_Batch": objectTypeDef(batchType.Self()),
+		},
+		typeDefs:  map[string]*TypeDef{},
+		rootTypes: map[string]struct{}{"Go": {}},
+	}
+	for _, key := range []string{"integration", "unit"} {
+		collectionPath := []dagql.Selector{
+			{Field: "go"},
+			{Field: "tests"},
+		}
+		itemPath := appendSelector(collectionPath, dagql.Selector{
+			Field: collectionGetFunctionName,
+			Args: []dagql.NamedInput{{
+				Name:  collectionKeyArgName,
+				Value: dagql.String(key),
+			}},
+		})
+		artifacts.rows = append(artifacts.rows, &artifactRow{
+			coordinates: []dagql.Nullable[dagql.String]{
+				dagql.NonNull(dagql.String("go-test")),
+				dagql.NonNull(dagql.String(key)),
+			},
+			rootField:            "go",
+			rootType:             "GoTest",
+			sourceModuleName:     "go",
+			selectorPath:         itemPath,
+			collectionPath:       collectionPath,
+			collectionKey:        dagql.String(key),
+			collectionKeyType:    keyType,
+			collectionDimension:  "go-test",
+			collectionType:       "go-tests",
+			collectionBatchType:  "GoTests_Batch",
+			collectionOccurrence: "go.tests",
+		})
+	}
+	return artifacts
 }
 
 func planTestArtifacts(t *testing.T) *Artifacts {

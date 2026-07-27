@@ -47,17 +47,18 @@ Examples:
 			func(ctx context.Context, engineClient *client.Client) error {
 				dag := engineClient.Dagger()
 				artifacts := dag.CurrentWorkspace().Artifacts()
+				dimensions, err := loadArtifactListDimensions(ctx, dag, artifacts, false)
+				if err != nil {
+					return err
+				}
 				if needsHelp {
-					dimensions, err := loadArtifactListDimensions(ctx, artifacts)
-					if err != nil {
-						return err
-					}
 					return printExecutionPlanHelp(cmd, dimensions)
 				}
 
 				artifacts, include, err := parseExecutionPlanArgs(
 					artifactArgs,
 					artifacts,
+					dimensions,
 				)
 				if err != nil {
 					return err

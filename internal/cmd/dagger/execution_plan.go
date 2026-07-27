@@ -19,11 +19,6 @@ type executionPlanRow struct {
 	after       []dagger.ID
 }
 
-type executionPlanDimensionFilter struct {
-	name   string
-	values []string
-}
-
 func prepareExecutionPlanCommand(
 	cmd *cobra.Command,
 	args []string,
@@ -64,13 +59,6 @@ func partitionExecutionPlanArgs(
 			flag := lookupCommandFlag(cmd, name)
 			if flag == nil {
 				artifactArgs = append(artifactArgs, arg)
-				if !hasValue {
-					if i+1 >= len(args) {
-						return nil, nil, false, fmt.Errorf("flag needs an argument: %s", arg)
-					}
-					i++
-					artifactArgs = append(artifactArgs, args[i])
-				}
 				continue
 			}
 			knownArgs = append(knownArgs, arg)
@@ -133,57 +121,25 @@ func shortFlagNeedsSeparateValue(cmd *cobra.Command, arg string) (bool, bool) {
 func parseExecutionPlanArgs(
 	args []string,
 	artifacts *dagger.Artifacts,
+	dimensions []artifactListDimension,
 ) (*dagger.Artifacts, []dagger.FunctionPattern, error) {
-	filters, include, err := parseExecutionPlanFilters(args)
+	flags := pflag.NewFlagSet("execution-plan", pflag.ContinueOnError)
+	flags.SetInterspersed(true)
+	flags.SetOutput(stderr)
+	filterValues, err := addArtifactFilterFlags(flags, dimensions)
 	if err != nil {
 		return nil, nil, err
 	}
-	for _, filter := range filters {
-		artifacts = artifacts.FilterCoordinates(filter.name, filter.values)
+	if err := filterValues.parse(flags, args); err != nil {
+		return nil, nil, err
 	}
-	return artifacts, include, nil
-}
-
-func parseExecutionPlanFilters(
-	args []string,
-) ([]executionPlanDimensionFilter, []dagger.FunctionPattern, error) {
-	var filters []executionPlanDimensionFilter
-	filterIndexes := map[string]int{}
-	var positionals []string
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if !strings.HasPrefix(arg, "--") {
-			positionals = append(positionals, arg)
-			continue
-		}
-
-		nameValue := strings.TrimPrefix(arg, "--")
-		name, value, hasValue := strings.Cut(nameValue, "=")
-		if name == "" {
-			return nil, nil, fmt.Errorf("invalid artifact filter %q", arg)
-		}
-		if !hasValue {
-			if i+1 >= len(args) {
-				return nil, nil, fmt.Errorf("flag needs an argument: %s", arg)
-			}
-			i++
-			value = args[i]
-		}
-
-		index, found := filterIndexes[name]
-		if !found {
-			index = len(filters)
-			filterIndexes[name] = index
-			filters = append(filters, executionPlanDimensionFilter{name: name})
-		}
-		filters[index].values = append(filters[index].values, value)
-	}
-
+	artifacts = filterValues.selection(dimensions).apply(artifacts, dimensions)
+	positionals := flags.Args()
 	include := make([]dagger.FunctionPattern, len(positionals))
 	for i, pattern := range positionals {
 		include[i] = dagger.FunctionPattern(pattern)
 	}
-	return filters, include, nil
+	return artifacts, include, nil
 }
 
 func printExecutionPlan(
@@ -221,7 +177,9 @@ func printExecutionPlan(
 
 	labels := make(map[dagger.ID]string, len(rows))
 	for _, row := range rows {
-		labels[row.id] = executionPlanRowLabel(row, varying)
+		if _, found := labels[row.id]; !found {
+			labels[row.id] = executionPlanRowLabel(row, varying)
+		}
 	}
 
 	tw := tabwriter.NewWriter(
@@ -283,7 +241,7 @@ func loadExecutionPlanRows(
 		return nil, nil, err
 	}
 	var dimensions []artifactListDimension
-	rows := make([]executionPlanRow, len(nodes))
+	var rows []executionPlanRow
 	for i := range nodes {
 		functionPath, err := nodes[i].FunctionPath(ctx)
 		if err != nil {
@@ -291,7 +249,7 @@ func loadExecutionPlanRows(
 		}
 		target := nodes[i].Target()
 		if dimensions == nil {
-			dimensions, err = loadArtifactListDimensions(ctx, target)
+			dimensions, err = loadArtifactListDimensions(ctx, nil, target, false)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -300,16 +258,22 @@ func loadExecutionPlanRows(
 		if err != nil {
 			return nil, nil, err
 		}
-		if len(targets) != 1 {
+		collectionBatched, err := nodes[i].CollectionBatched(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(targets) == 0 {
+			return nil, nil, fmt.Errorf(
+				"action %q has no targets",
+				strings.Join(functionPath, ":"),
+			)
+		}
+		if !collectionBatched && len(targets) != 1 {
 			return nil, nil, fmt.Errorf(
 				"unbatched action %q has %d targets",
 				strings.Join(functionPath, ":"),
 				len(targets),
 			)
-		}
-		coordinates, err := targets[0].Coordinates(ctx)
-		if err != nil {
-			return nil, nil, err
 		}
 		id, err := nodes[i].ID(ctx)
 		if err != nil {
@@ -319,11 +283,17 @@ func loadExecutionPlanRows(
 		if err != nil {
 			return nil, nil, err
 		}
-		rows[i] = executionPlanRow{
-			id:          id,
-			coordinates: coordinates,
-			action:      strings.Join(functionPath, ":"),
-			after:       after,
+		for _, target := range targets {
+			coordinates, err := target.Coordinates(ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+			rows = append(rows, executionPlanRow{
+				id:          id,
+				coordinates: coordinates,
+				action:      strings.Join(functionPath, ":"),
+				after:       after,
+			})
 		}
 	}
 	return dimensions, rows, nil
@@ -352,6 +322,9 @@ func printExecutionPlanHelp(
 	fmt.Fprintln(cmd.OutOrStdout(), "\nArtifact filters:")
 	for _, dimension := range dimensions {
 		fmt.Fprintf(cmd.OutOrStdout(), "  --%s stringArray\n", dimension.Name)
+		for _, alias := range dimension.Aliases {
+			fmt.Fprintf(cmd.OutOrStdout(), "  --%s\n", alias)
+		}
 	}
 	return nil
 }

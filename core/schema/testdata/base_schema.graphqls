@@ -12,6 +12,9 @@ directive @cache(
 """Indicates that this function is a check."""
 directive @check on FIELD_DEFINITION
 
+"""Indicates that this object is a keyed collection."""
+directive @collection on OBJECT
+
 """Indicates that the argument defaults to a container address."""
 directive @defaultAddress(address: String!) on ARGUMENT_DEFINITION
 
@@ -42,8 +45,14 @@ directive @experimental(
 """Indicates that this function is a generate function."""
 directive @generate on FIELD_DEFINITION
 
+"""Indicates the effective item resolver of a collection."""
+directive @get on FIELD_DEFINITION
+
 """Filter directory contents using .gitignore-style glob patterns."""
 directive @ignorePatterns(patterns: [String!]!) on ARGUMENT_DEFINITION
+
+"""Indicates the effective keys field of a collection."""
+directive @keys on FIELD_DEFINITION
 
 """Indicates the source information for where a given field is defined."""
 directive @sourceMap(module: String!, filename: String!, line: Int!, column: Int!, url: String!) on SCALAR | OBJECT | FIELD_DEFINITION | ARGUMENT_DEFINITION | UNION | ENUM | ENUM_VALUE | INPUT_OBJECT
@@ -241,6 +250,9 @@ type Binding implements Node {
 
   """Retrieve the binding value, as type Cloud"""
   asCloud: Cloud!
+
+  """Retrieve the binding value, as type CollectionTypeDef"""
+  asCollectionTypeDef: CollectionTypeDef!
 
   """Retrieve the binding value, as type Container"""
   asContainer: Container!
@@ -468,6 +480,26 @@ type Cloud implements Node {
 
 """A unique identifier for an object."""
 scalar CloudID
+
+"""A definition of collection semantics layered on top of an object type."""
+type CollectionTypeDef implements Node {
+  """
+  The synthetic batch type exposed for collection-level operations, if any.
+  """
+  batchType: TypeDef!
+
+  """A unique identifier for this CollectionTypeDef."""
+  id: ID!
+
+  """The type accepted by get(key) and subset(keys: ...)."""
+  keyType: TypeDef!
+
+  """The type returned by get() and enumerated by list."""
+  valueType: TypeDef!
+}
+
+"""A unique identifier for an object."""
+scalar CollectionTypeDefID
 
 """An OCI-compatible container, also known as a Docker container."""
 type Container implements Exportable & Node & Syncer {
@@ -2590,6 +2622,31 @@ type Env implements Node {
 
   """Declare a desired Cloud output to be assigned in the environment"""
   withCloudOutput(
+    """The name of the binding"""
+    name: String!
+
+    """A description of the desired value of the binding"""
+    description: String!
+  ): Env!
+
+  """
+  Create or update a binding of type CollectionTypeDef in the environment
+  """
+  withCollectionTypeDefInput(
+    """The name of the binding"""
+    name: String!
+
+    """The CollectionTypeDef value to assign to the binding"""
+    value: ID! @expectedType(name: "CollectionTypeDef")
+
+    """The purpose of the input"""
+    description: String!
+  ): Env!
+
+  """
+  Declare a desired CollectionTypeDef output to be assigned in the environment
+  """
+  withCollectionTypeDefOutput(
     """The name of the binding"""
     name: String!
 
@@ -5014,6 +5071,9 @@ type Query implements Node {
   """Load a Cloud from its ID."""
   loadCloudFromID(id: CloudID!): Cloud!
 
+  """Load a CollectionTypeDef from its ID."""
+  loadCollectionTypeDefFromID(id: CollectionTypeDefID!): CollectionTypeDef!
+
   """Load a Container from its ID."""
   loadContainerFromID(id: ContainerID!): Container!
 
@@ -5548,6 +5608,12 @@ scalar TerminalID
 """A definition of a parameter or return type in a Module."""
 type TypeDef implements Node {
   """
+  If kind is OBJECT and the object is a collection, the collection-specific type
+  definition. If the type is not a collection, this will be null.
+  """
+  asCollection: CollectionTypeDef
+
+  """
   If kind is ENUM, the enum-specific type definition. If kind is not ENUM, this will be null.
   """
   asEnum: EnumTypeDef
@@ -5588,6 +5654,15 @@ type TypeDef implements Node {
 
   """Whether this type can be set to null. Defaults to false."""
   optional: Boolean!
+
+  """Marks an object TypeDef as a collection."""
+  withCollection: TypeDef!
+
+  """Marks the named function as the collection get function."""
+  withCollectionGet(name: String!): TypeDef!
+
+  """Marks the named field as the collection keys field."""
+  withCollectionKeys(name: String!): TypeDef!
 
   """
   Adds a function for constructing a new instance of an Object TypeDef, failing if the type is not an object.

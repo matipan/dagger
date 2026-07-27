@@ -527,6 +527,30 @@ var coreDirectives = []DirectiveSpec{
 			DirectiveLocationFieldDefinition,
 		},
 	},
+	{
+		Name:        "collection",
+		Description: FormatDescription(`Indicates that this object is a keyed collection.`),
+		Args:        NewInputSpecs(), // none
+		Locations: []DirectiveLocation{
+			DirectiveLocationObject,
+		},
+	},
+	{
+		Name:        "keys",
+		Description: FormatDescription(`Indicates the effective keys field of a collection.`),
+		Args:        NewInputSpecs(), // none
+		Locations: []DirectiveLocation{
+			DirectiveLocationFieldDefinition,
+		},
+	},
+	{
+		Name:        "get",
+		Description: FormatDescription(`Indicates the effective item resolver of a collection.`),
+		Args:        NewInputSpecs(), // none
+		Locations: []DirectiveLocation{
+			DirectiveLocationFieldDefinition,
+		},
+	},
 }
 
 // Root returns the root object of the server. It is suitable for passing to

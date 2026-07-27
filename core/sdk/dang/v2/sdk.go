@@ -61,8 +61,12 @@ func (Impl) ModuleTypes(
 		runner = runDangDirForModuleTypes
 	}
 
-	_, err = evalDangSource(ctx, query, src, schemaJSONFile, nestedClientMetadata, clientMetadata.ClientID, true, nil, scopedMod, dagql.ObjectResult[*core.Env]{}, runner, func(ctx context.Context, env dang.ValueScope) ([]byte, error) {
-		inst, err = initDangModule(ctx, dag, env)
+	_, err = evalDangSource(ctx, query, src, schemaJSONFile, nestedClientMetadata, clientMetadata.ClientID, true, nil, scopedMod, dagql.ObjectResult[*core.Env]{}, runner, func(
+		ctx context.Context,
+		env dang.ValueScope,
+		typeDirectives map[string][]*dang.DirectiveApplication,
+	) ([]byte, error) {
+		inst, err = initDangModule(ctx, dag, env, typeDirectives)
 		if err != nil {
 			return nil, fmt.Errorf("init module: %w", err)
 		}

@@ -50,13 +50,17 @@ func (r *runtime) eval(
 ) ([]byte, error) {
 	return evalDangSource(ctx, query, r.modSource, schemaFile, nestedClientMetadata, callerClientID, hostServiceProxyToCaller, fnCall, moduleContext, envContext, func(ctx context.Context, modSrcDir string) (dang.ValueScope, error) {
 		return dang.RunDir(ctx, modSrcDir, false)
-	}, func(ctx context.Context, env dang.ValueScope) ([]byte, error) {
+	}, func(
+		ctx context.Context,
+		env dang.ValueScope,
+		typeDirectives map[string][]*dang.DirectiveApplication,
+	) ([]byte, error) {
 		if fnCall.ParentName == "" {
 			srv, err := core.CurrentDagqlServer(ctx)
 			if err != nil {
 				return nil, fmt.Errorf("get dagql server: %w", err)
 			}
-			dagMod, err := initDangModule(ctx, srv, env)
+			dagMod, err := initDangModule(ctx, srv, env, typeDirectives)
 			if err != nil {
 				return nil, fmt.Errorf("init module: %w", err)
 			}
@@ -91,7 +95,11 @@ func evalDangSource(
 	moduleContext dagql.ObjectResult[*core.Module],
 	envContext dagql.ObjectResult[*core.Env],
 	runSource dangSourceRunner,
-	withEnv func(context.Context, dang.ValueScope) ([]byte, error),
+	withEnv func(
+		context.Context,
+		dang.ValueScope,
+		map[string][]*dang.DirectiveApplication,
+	) ([]byte, error),
 ) ([]byte, error) {
 	return dangshared.WithNestedClientServer(ctx, query, nestedClientMetadata, callerClientID, hostServiceProxyToCaller, fnCall, moduleContext, envContext, func(ctx context.Context, gqlClient graphql.Client) ([]byte, error) {
 		var intro introspection.Response
@@ -117,6 +125,7 @@ func evalDangSource(
 
 		modCtx := modSource.Self().ContextDirectory
 		var env dang.ValueScope
+		var typeDirectives map[string][]*dang.DirectiveApplication
 		err = modCtx.Self().Mount(ctx, modCtx, func(path string) error {
 			modSrcDir := filepath.Join(path, modSource.Self().SourceSubpath)
 
@@ -136,14 +145,56 @@ func evalDangSource(
 			if err != nil {
 				return fmt.Errorf("run dir: %w", err)
 			}
+			if fnCall == nil || fnCall.ParentName == "" {
+				typeDirectives, err = loadDangTypeDirectives(modSrcDir)
+				if err != nil {
+					return err
+				}
+			}
 			return nil
 		})
 		if err != nil {
 			return nil, fmt.Errorf("mount source: %w", err)
 		}
 
-		return withEnv(ctx, env)
+		return withEnv(ctx, env, typeDirectives)
 	})
+}
+
+func loadDangTypeDirectives(
+	modSrcDir string,
+) (map[string][]*dang.DirectiveApplication, error) {
+	entries, err := os.ReadDir(modSrcDir)
+	if err != nil {
+		return nil, fmt.Errorf("read Dang source directory: %w", err)
+	}
+
+	directives := map[string][]*dang.DirectiveApplication{}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".dang" {
+			continue
+		}
+		filename := filepath.Join(modSrcDir, entry.Name())
+		root, err := dang.ParseFile(filename)
+		if err != nil {
+			return nil, fmt.Errorf("parse Dang source file %s: %w", filename, err)
+		}
+		file, ok := root.(*dang.FileBlock)
+		if !ok {
+			return nil, fmt.Errorf("parse Dang source file %s: expected file, got %T", filename, root)
+		}
+		for _, form := range file.Forms {
+			object, ok := form.(*dang.ObjectDecl)
+			if !ok || object.Name == nil {
+				continue
+			}
+			directives[object.Name.Name] = append(
+				directives[object.Name.Name],
+				object.Directives...,
+			)
+		}
+	}
+	return directives, nil
 }
 
 // ensureModuleSelfTypes makes each of the module's own declared object,
@@ -500,7 +551,12 @@ func markDangLocalType(ctx context.Context, srv *dagql.Server, typeDef dagql.Obj
 	}
 }
 
-func initDangModule(ctx context.Context, srv *dagql.Server, env dang.ValueScope) (res dagql.ObjectResult[*core.Module], _ error) {
+func initDangModule(
+	ctx context.Context,
+	srv *dagql.Server,
+	env dang.ValueScope,
+	typeDirectives map[string][]*dang.DirectiveApplication,
+) (res dagql.ObjectResult[*core.Module], _ error) {
 	localTypes := collectDangLocalTypes(env)
 	sels := []dagql.Selector{
 		{
@@ -515,7 +571,14 @@ func initDangModule(ctx context.Context, srv *dagql.Server, env dang.ValueScope)
 		}
 		switch val := binding.Value.(type) {
 		case *dang.ConstructorFunction:
-			objDef, err := createObjectTypeDef(ctx, srv, binding.Key, val, localTypes)
+			objDef, err := createObjectTypeDef(
+				ctx,
+				srv,
+				binding.Key,
+				val,
+				localTypes,
+				typeDirectives[binding.Key],
+			)
 			if err != nil {
 				return res, fmt.Errorf("failed to create object %s: %w", binding.Key, err)
 			}
@@ -833,10 +896,56 @@ func dangValToGo(val dang.Value) (any, error) {
 	}
 }
 
-func createObjectTypeDef(ctx context.Context, srv *dagql.Server, name string, module *dang.ConstructorFunction, localTypes dangLocalTypes) (dagql.ObjectResult[*core.TypeDef], error) {
+func createObjectTypeDef(
+	ctx context.Context,
+	srv *dagql.Server,
+	name string,
+	module *dang.ConstructorFunction,
+	localTypes dangLocalTypes,
+	typeDirectives []*dang.DirectiveApplication,
+) (dagql.ObjectResult[*core.TypeDef], error) {
 	var res dagql.ObjectResult[*core.TypeDef]
 
 	classMod := module.ObjectType
+	collectionAnnotations := 0
+	for _, directive := range typeDirectives {
+		if directive.Name == "collection" {
+			collectionAnnotations++
+		}
+	}
+	if collectionAnnotations > 1 {
+		return res, fmt.Errorf("object %s has multiple @collection annotations", name)
+	}
+
+	collectionKeys := 0
+	collectionGets := 0
+	for _, form := range module.ObjectBodyForms {
+		slot, ok := form.(*dang.FieldDecl)
+		if !ok || slot.Visibility < dang.PublicVisibility {
+			continue
+		}
+		for _, directive := range classMod.GetDirectives(slot.Name.Name) {
+			switch directive.Name {
+			case "keys":
+				collectionKeys++
+			case "get":
+				collectionGets++
+			}
+		}
+	}
+	if collectionAnnotations == 0 && (collectionKeys > 0 || collectionGets > 0) {
+		return res, fmt.Errorf(
+			"object %s uses collection member annotations without @collection",
+			name,
+		)
+	}
+	if collectionKeys > 1 {
+		return res, fmt.Errorf("collection object %s has multiple @keys fields", name)
+	}
+	if collectionGets > 1 {
+		return res, fmt.Errorf("collection object %s has multiple @get methods", name)
+	}
+
 	withObjectArgs := []dagql.NamedInput{{Name: "name", Value: dagql.String(name)}}
 	if desc := classMod.GetTypeDocString(); desc != "" {
 		withObjectArgs = append(withObjectArgs, dagql.NamedInput{Name: "description", Value: dagql.String(desc)})
@@ -848,6 +957,9 @@ func createObjectTypeDef(ctx context.Context, srv *dagql.Server, name string, mo
 			Field: "withObject",
 			Args:  withObjectArgs,
 		},
+	}
+	if collectionAnnotations == 1 {
+		sels = append(sels, dagql.Selector{Field: "withCollection"})
 	}
 
 	for _, form := range module.ObjectBodyForms {
@@ -881,6 +993,14 @@ func createObjectTypeDef(ctx context.Context, srv *dagql.Server, name string, mo
 				Field: "withFunction",
 				Args:  []dagql.NamedInput{{Name: "function", Value: dagql.NewID[*core.Function](fnDefID)}},
 			})
+			for _, directive := range classMod.GetDirectives(bindingName) {
+				if directive.Name == "get" {
+					sels = append(sels, dagql.Selector{
+						Field: "withCollectionGet",
+						Args:  []dagql.NamedInput{{Name: "name", Value: dagql.String(bindingName)}},
+					})
+				}
+			}
 		default:
 			fieldDef, err := dangTypeToTypeDef(ctx, srv, slotType, localTypes)
 			if err != nil {
@@ -904,6 +1024,14 @@ func createObjectTypeDef(ctx context.Context, srv *dagql.Server, name string, mo
 				Field: "withField",
 				Args:  fieldArgs,
 			})
+			for _, directive := range classMod.GetDirectives(bindingName) {
+				if directive.Name == "keys" {
+					sels = append(sels, dagql.Selector{
+						Field: "withCollectionKeys",
+						Args:  []dagql.NamedInput{{Name: "name", Value: dagql.String(bindingName)}},
+					})
+				}
+			}
 		}
 	}
 

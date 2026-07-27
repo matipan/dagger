@@ -25,8 +25,9 @@ const trivialFieldDirectiveName = "trivialResolveField"
 const deprecatedDirectiveName = "deprecated"
 
 type ModuleObjectType struct {
-	typeDef *ObjectTypeDef
-	mod     dagql.ObjectResult[*Module]
+	typeDef    *ObjectTypeDef
+	collection *CollectionTypeDef
+	mod        dagql.ObjectResult[*Module]
 }
 
 var _ ModType = &ModuleObjectType{}
@@ -74,9 +75,10 @@ func (t *ModuleObjectType) ConvertFromSDKResult(ctx context.Context, value any) 
 		return loaded, nil
 	case map[string]any:
 		res, err := dagql.NewResultForCurrentCall(ctx, &ModuleObject{
-			Module:  t.mod,
-			TypeDef: t.typeDef,
-			Fields:  value,
+			Module:     t.mod,
+			TypeDef:    t.typeDef,
+			Collection: t.collection,
+			Fields:     value,
 		})
 		if err != nil {
 			return nil, err
@@ -403,12 +405,50 @@ func (t *ModuleObjectType) TypeDef(ctx context.Context) (dagql.ObjectResult[*Typ
 			return dagql.ObjectResult[*TypeDef]{}, err
 		}
 	}
-	return SelectReferenceTypeDef(ctx, "withObject", "name", t.typeDef.Name,
+	typeDef, err := SelectReferenceTypeDef(ctx, "withObject", "name", t.typeDef.Name,
 		dagql.NamedInput{Name: "description", Value: dagql.String(t.typeDef.Description)},
 		dagql.NamedInput{Name: "sourceMap", Value: sourceMap},
 		dagql.NamedInput{Name: "deprecated", Value: OptString(t.typeDef.Deprecated)},
 		dagql.NamedInput{Name: "sourceModuleName", Value: OptSourceModuleName(t.typeDef.SourceModuleName)},
 	)
+	if err != nil || t.collection == nil {
+		return typeDef, err
+	}
+	srv, err := CurrentDagqlServer(ctx)
+	if err != nil {
+		return dagql.ObjectResult[*TypeDef]{}, err
+	}
+	var annotated dagql.ObjectResult[*TypeDef]
+	if err := srv.Select(ctx, typeDef, &annotated, dagql.Selector{Field: "withCollection"}); err != nil {
+		return dagql.ObjectResult[*TypeDef]{}, err
+	}
+	if t.collection.KeysFieldNameOverride != "" {
+		var withKeys dagql.ObjectResult[*TypeDef]
+		if err := srv.Select(ctx, annotated, &withKeys, dagql.Selector{
+			Field: "withCollectionKeys",
+			Args: []dagql.NamedInput{{
+				Name:  "name",
+				Value: dagql.String(t.collection.KeysFieldNameOverride),
+			}},
+		}); err != nil {
+			return dagql.ObjectResult[*TypeDef]{}, err
+		}
+		annotated = withKeys
+	}
+	if t.collection.GetFunctionNameOverride != "" {
+		var withGet dagql.ObjectResult[*TypeDef]
+		if err := srv.Select(ctx, annotated, &withGet, dagql.Selector{
+			Field: "withCollectionGet",
+			Args: []dagql.NamedInput{{
+				Name:  "name",
+				Value: dagql.String(t.collection.GetFunctionNameOverride),
+			}},
+		}); err != nil {
+			return dagql.ObjectResult[*TypeDef]{}, err
+		}
+		annotated = withGet
+	}
+	return annotated, nil
 }
 
 type Callable interface {
@@ -453,8 +493,9 @@ func (t *ModuleObjectType) GetCallable(ctx context.Context, name string) (Callab
 type ModuleObject struct {
 	Module dagql.ObjectResult[*Module]
 
-	TypeDef *ObjectTypeDef
-	Fields  map[string]any
+	TypeDef    *ObjectTypeDef
+	Collection *CollectionTypeDef
+	Fields     map[string]any
 }
 
 var _ dagql.HasDependencyResults = (*ModuleObject)(nil)
@@ -795,9 +836,10 @@ func (obj *ModuleObject) DecodePersistedObject(
 		fields[name] = decoded
 	}
 	return &ModuleObject{
-		Module:  obj.Module,
-		TypeDef: obj.TypeDef,
-		Fields:  fields,
+		Module:     obj.Module,
+		TypeDef:    obj.TypeDef,
+		Collection: obj.Collection,
+		Fields:     fields,
 	}, nil
 }
 
@@ -1045,6 +1087,9 @@ func (obj *ModuleObject) TypeDefinition(view call.View) *ast.Definition {
 		Kind: ast.Object,
 		Name: obj.Type().Name(),
 	}
+	if obj.Collection != nil {
+		def.Directives = append(def.Directives, &ast.Directive{Name: "collection"})
+	}
 	if obj.TypeDef.SourceMap.Valid {
 		def.Directives = append(def.Directives, obj.TypeDef.SourceMap.Value.Self().TypeDirective())
 	}
@@ -1066,6 +1111,9 @@ func (obj *ModuleObject) Install(ctx context.Context, dag *dagql.Server, opts ..
 	}
 
 	installDirectives := []*ast.Directive{}
+	if obj.Collection != nil {
+		installDirectives = append(installDirectives, &ast.Directive{Name: "collection"})
+	}
 	if obj.TypeDef.SourceMap.Valid {
 		classOpts.SourceMap = obj.TypeDef.SourceMap.Value.Self().TypeDirective()
 		installDirectives = append(installDirectives, obj.TypeDef.SourceMap.Value.Self().TypeDirective())
@@ -1077,16 +1125,24 @@ func (obj *ModuleObject) Install(ctx context.Context, dag *dagql.Server, opts ..
 			return fmt.Errorf("failed to install constructor: %w", err)
 		}
 	}
-	fields, err := obj.fields(ctx)
-	if err != nil {
-		return err
+	var fields []dagql.Field[*ModuleObject]
+	var err error
+	if obj.Collection != nil {
+		fields, err = obj.collectionMembers(ctx, dag)
+		if err != nil {
+			return err
+		}
+	} else {
+		fields, err = obj.fields(ctx)
+		if err != nil {
+			return err
+		}
+		funs, err := obj.functions(ctx, dag)
+		if err != nil {
+			return err
+		}
+		fields = append(fields, funs...)
 	}
-
-	funs, err := obj.functions(ctx, dag)
-	if err != nil {
-		return err
-	}
-	fields = append(fields, funs...)
 
 	class.Install(fields...)
 	dag.InstallObject(class, installDirectives...)

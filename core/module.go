@@ -1074,12 +1074,58 @@ func (*Module) DecodePersistedObject(ctx context.Context, dag *dagql.Server, _ u
 }
 
 func (mod *Module) TypeDefs(ctx context.Context, dag *dagql.Server) (dagql.ObjectResultArray[*TypeDef], error) {
-	_ = ctx
-	_ = dag
-	typeDefs := make(dagql.ObjectResultArray[*TypeDef], 0, len(mod.ObjectDefs)+len(mod.InterfaceDefs)+len(mod.EnumDefs))
-	typeDefs = append(typeDefs, mod.ObjectDefs...)
-	typeDefs = append(typeDefs, mod.InterfaceDefs...)
-	typeDefs = append(typeDefs, mod.EnumDefs...)
+	projector := newCollectionProjector(ctx, dag, mod)
+	typeDefs := make(
+		dagql.ObjectResultArray[*TypeDef],
+		0,
+		len(mod.ObjectDefs)+len(mod.InterfaceDefs)+len(mod.EnumDefs),
+	)
+	appendProjected := func(label string, typeDef *TypeDef) error {
+		result, err := collectionProjectionResult(projector, label, typeDef)
+		if err != nil {
+			return err
+		}
+		typeDefs = append(typeDefs, result)
+		return nil
+	}
+	for _, def := range mod.ObjectDefs {
+		projected, err := projector.projectTypeDef(def.Self())
+		if err != nil {
+			return nil, err
+		}
+		if err := appendProjected("ObjectTypeDef", projected); err != nil {
+			return nil, err
+		}
+		if def.Self().AsCollection.Valid {
+			batch, err := projector.projectCollectionBatchTypeDef(def.Self())
+			if err != nil {
+				return nil, err
+			}
+			if batch != nil {
+				if err := appendProjected("BatchTypeDef", batch); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	for _, def := range mod.InterfaceDefs {
+		projected, err := projector.projectTypeDef(def.Self())
+		if err != nil {
+			return nil, err
+		}
+		if err := appendProjected("InterfaceTypeDef", projected); err != nil {
+			return nil, err
+		}
+	}
+	for _, def := range mod.EnumDefs {
+		projected, err := projector.projectTypeDef(def.Self())
+		if err != nil {
+			return nil, err
+		}
+		if err := appendProjected("EnumTypeDef", projected); err != nil {
+			return nil, err
+		}
+	}
 	return typeDefs, nil
 }
 
@@ -1280,7 +1326,113 @@ func (mod *Module) validateObjectTypeDef(ctx context.Context, typeDef dagql.Obje
 			}
 		}
 	}
+	return mod.validateCollectionTypeDef(typeDef.Self())
+}
+
+func (mod *Module) validateCollectionTypeDef(typeDef *TypeDef) error {
+	if !typeDef.AsCollection.Valid {
+		return nil
+	}
+	if typeDef.Kind != TypeDefKindObject || !typeDef.AsObject.Valid ||
+		typeDef.AsObject.Value.Self() == nil {
+		return fmt.Errorf("only object types can be marked as collections")
+	}
+
+	obj := typeDef.AsObject.Value.Self()
+	collection := typeDef.AsCollection.Value
+
+	keysFieldName := collection.KeysFieldNameOverride
+	if keysFieldName == "" {
+		keysFieldName = collectionKeysFieldName
+	}
+	keysField, ok := obj.FieldByName(keysFieldName)
+	if !ok {
+		return fmt.Errorf("collection object %q must define exactly one effective keys field", obj.OriginalName)
+	}
+	keyType, err := validateCollectionKeysType(obj, keysFieldName, keysField.TypeDef.Self())
+	if err != nil {
+		return err
+	}
+	collection.KeysFieldName = keysField.Name
+
+	getFunctionName := collection.GetFunctionNameOverride
+	if getFunctionName == "" {
+		getFunctionName = collectionGetFunctionName
+	}
+	getFn, ok := obj.FunctionByName(getFunctionName)
+	if !ok {
+		return fmt.Errorf("collection object %q must define exactly one effective get function", obj.OriginalName)
+	}
+	if len(getFn.Args) != 1 {
+		return fmt.Errorf("collection object %q get function %q must accept exactly one argument", obj.OriginalName, getFn.OriginalName)
+	}
+	getArg := getFn.Args[0].Self()
+	if getArg == nil || getArg.TypeDef.Self() == nil {
+		return fmt.Errorf("collection object %q get function %q must have a valid key argument", obj.OriginalName, getFn.OriginalName)
+	}
+	getArgType := getArg.TypeDef.Self()
+	if getArgType.Optional {
+		return fmt.Errorf("collection object %q get function %q argument %q must be non-null", obj.OriginalName, getFn.OriginalName, getArg.OriginalName)
+	}
+	if !isValidCollectionKeyType(getArgType) {
+		return fmt.Errorf("collection object %q get function %q argument %q must use a scalar, custom scalar, or enum key type", obj.OriginalName, getFn.OriginalName, getArg.OriginalName)
+	}
+	if !typeDefsEqual(keyType, getArgType) {
+		return fmt.Errorf("collection object %q get function %q argument %q must match keys field type", obj.OriginalName, getFn.OriginalName, getArg.OriginalName)
+	}
+	if getFn.ReturnType.Self() == nil {
+		return fmt.Errorf("collection object %q get function %q must return a type", obj.OriginalName, getFn.OriginalName)
+	}
+	returnType := getFn.ReturnType.Self()
+	if returnType.Optional {
+		return fmt.Errorf("collection object %q get function %q must return a non-null object", obj.OriginalName, getFn.OriginalName)
+	}
+	if returnType.Kind != TypeDefKindObject || !returnType.AsObject.Valid ||
+		returnType.AsObject.Value.Self() == nil {
+		return fmt.Errorf("collection object %q get function %q must return an object", obj.OriginalName, getFn.OriginalName)
+	}
+
+	collection.KeyType = keyType.Clone()
+	collection.ValueType = returnType.Clone()
+	collection.GetFunctionName = getFn.Name
+	collection.GetArgName = getArg.Name
 	return nil
+}
+
+func validateCollectionKeysType(
+	obj *ObjectTypeDef,
+	keysFieldName string,
+	keysTypeDef *TypeDef,
+) (*TypeDef, error) {
+	if keysTypeDef == nil || keysTypeDef.Optional {
+		return nil, fmt.Errorf("collection object %q keys field %q must be a non-null list", obj.OriginalName, keysFieldName)
+	}
+	if keysTypeDef.Kind != TypeDefKindList || !keysTypeDef.AsList.Valid ||
+		keysTypeDef.AsList.Value.Self() == nil ||
+		keysTypeDef.AsList.Value.Self().ElementTypeDef.Self() == nil {
+		return nil, fmt.Errorf("collection object %q keys field %q must be a list", obj.OriginalName, keysFieldName)
+	}
+	keyType := keysTypeDef.AsList.Value.Self().ElementTypeDef.Self()
+	if keyType.Optional {
+		return nil, fmt.Errorf("collection object %q keys field %q must be a list of non-null keys", obj.OriginalName, keysFieldName)
+	}
+	if !isValidCollectionKeyType(keyType) {
+		return nil, fmt.Errorf("collection object %q keys field %q must use a scalar, custom scalar, or enum key type", obj.OriginalName, keysFieldName)
+	}
+	return keyType, nil
+}
+
+func isValidCollectionKeyType(typeDef *TypeDef) bool {
+	switch typeDef.Kind {
+	case TypeDefKindString, TypeDefKindInteger, TypeDefKindFloat, TypeDefKindBoolean, TypeDefKindScalar, TypeDefKindEnum:
+		return true
+	default:
+		return false
+	}
+}
+
+func typeDefsEqual(a, b *TypeDef) bool {
+	return a != nil && b != nil && a.IsSubtypeOf(b) && b.IsSubtypeOf(a)
 }
 
 func (mod *Module) validateInterfaceTypeDef(ctx context.Context, typeDef dagql.ObjectResult[*TypeDef], state *moduleValidationState) error {
@@ -1596,6 +1748,9 @@ func (mod *Module) namespaceTypeDef(ctx context.Context, modPath string, typeDef
 			Args:  []dagql.NamedInput{{Name: "objectTypeDef", Value: updatedObjID}},
 		}); err != nil {
 			return typeDef, fmt.Errorf("namespace object typedef: %w", err)
+		}
+		if err := mod.validateCollectionTypeDef(updated.Self()); err != nil {
+			return typeDef, fmt.Errorf("namespace collection type: %w", err)
 		}
 		return updated, nil
 	case TypeDefKindInterface:
@@ -2227,6 +2382,10 @@ func (mod *userMod) install(ctx context.Context, dag *dagql.Server, opts ...Inst
 
 	for _, def := range self.ObjectDefs {
 		objDef := def.Self().AsObject.Value.Self()
+		var collection *CollectionTypeDef
+		if def.Self().AsCollection.Valid {
+			collection = def.Self().AsCollection.Value
+		}
 
 		slog.ExtraDebug("installing object", "name", self.Name(), "object", objDef.Name)
 
@@ -2243,8 +2402,9 @@ func (mod *userMod) install(ctx context.Context, dag *dagql.Server, opts ...Inst
 		}
 
 		obj := &ModuleObject{
-			Module:  mod.res,
-			TypeDef: objDef,
+			Module:     mod.res,
+			TypeDef:    objDef,
+			Collection: collection,
 		}
 		if err := obj.Install(ctx, dag, opts...); err != nil {
 			return err
@@ -2364,9 +2524,14 @@ func (mod *userMod) modTypeForObject(typeDef *TypeDef) (ModType, bool) {
 	self := mod.self()
 	for _, obj := range self.ObjectDefs {
 		if obj.Self().AsObject.Value.Self().Name == typeDef.AsObject.Value.Self().Name {
+			var collection *CollectionTypeDef
+			if obj.Self().AsCollection.Valid {
+				collection = obj.Self().AsCollection.Value
+			}
 			return &ModuleObjectType{
-				typeDef: obj.Self().AsObject.Value.Self(),
-				mod:     mod.res,
+				typeDef:    obj.Self().AsObject.Value.Self(),
+				collection: collection,
+				mod:        mod.res,
 			}, true
 		}
 	}

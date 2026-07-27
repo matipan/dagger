@@ -1866,6 +1866,14 @@
         "name": "check"
       },
       {
+        "args": [],
+        "description": "Indicates that this object is a keyed collection.",
+        "locations": [
+          "OBJECT"
+        ],
+        "name": "collection"
+      },
+      {
         "args": [
           {
             "defaultValue": null,
@@ -2037,6 +2045,14 @@
         "name": "generate"
       },
       {
+        "args": [],
+        "description": "Indicates the effective item resolver of a collection.",
+        "locations": [
+          "FIELD_DEFINITION"
+        ],
+        "name": "get"
+      },
+      {
         "args": [
           {
             "defaultValue": null,
@@ -2069,6 +2085,14 @@
           "ARGUMENT_DEFINITION"
         ],
         "name": "ignorePatterns"
+      },
+      {
+        "args": [],
+        "description": "Indicates the effective keys field of a collection.",
+        "locations": [
+          "FIELD_DEFINITION"
+        ],
+        "name": "keys"
       },
       {
         "args": [

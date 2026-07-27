@@ -20,8 +20,8 @@ func TestParseArtifactListArgs(t *testing.T) {
 	}, dimensions)
 	require.NoError(t, err)
 	require.Equal(t, artifactTypeDimension, target)
-	require.Equal(t, []string{"go", "js"}, filters[artifactTypeDimension])
-	require.Equal(t, []string{"TestFoo"}, filters["go-test"])
+	require.Equal(t, []string{"go", "js"}, filters.coordinates[artifactTypeDimension])
+	require.Equal(t, []string{"TestFoo"}, filters.coordinates["go-test"])
 }
 
 func TestParseArtifactListArgsDimension(t *testing.T) {
@@ -33,8 +33,57 @@ func TestParseArtifactListArgsDimension(t *testing.T) {
 	target, filters, err := parseArtifactListArgs([]string{"go-test"}, dimensions)
 	require.NoError(t, err)
 	require.Equal(t, "go-test", target)
-	require.Empty(t, filters[artifactTypeDimension])
-	require.Empty(t, filters["go-test"])
+	require.Empty(t, filters.coordinates[artifactTypeDimension])
+	require.Empty(t, filters.coordinates["go-test"])
+}
+
+func TestParseArtifactListArgsCollectionAlias(t *testing.T) {
+	dimensions := []artifactListDimension{
+		{Name: artifactTypeDimension},
+		{Name: "go-test", Aliases: []string{"go-tests"}},
+	}
+
+	target, filters, err := parseArtifactListArgs(
+		[]string{"go-test", "--go-tests"},
+		dimensions,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "go-test", target)
+	require.True(t, filters.presence["go-test"])
+
+	_, _, err = parseArtifactListArgs(
+		[]string{"go-test", "--go-tests=false"},
+		dimensions,
+	)
+	require.EqualError(t, err, "flag --go-tests does not accept a value")
+}
+
+func TestParseArtifactListArgsRejectsCollectionAliasDimensionCollision(t *testing.T) {
+	dimensions := []artifactListDimension{
+		{Name: artifactTypeDimension},
+		{Name: "go-test", Aliases: []string{"go-tests"}},
+		{Name: "go-tests"},
+	}
+
+	_, _, err := parseArtifactListArgs([]string{"go-test"}, dimensions)
+	require.EqualError(
+		t,
+		err,
+		`artifact collection alias "go-tests" conflicts with filter "go-tests"`,
+	)
+}
+
+func TestParseArtifactListArgsRejectsCommaSeparatedCoordinates(t *testing.T) {
+	dimensions := []artifactListDimension{{Name: artifactTypeDimension}}
+	_, _, err := parseArtifactListArgs(
+		[]string{"types", "--type=go,js"},
+		dimensions,
+	)
+	require.EqualError(
+		t,
+		err,
+		"flag --type must be repeated for multiple values; comma-separated values are not supported",
+	)
 }
 
 func TestParseArtifactListArgsErrors(t *testing.T) {

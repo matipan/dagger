@@ -74,6 +74,17 @@ func (ps *parseState) parseGoStruct(t *types.Struct, named *types.Named) (*parse
 	if doc := docForAstSpec(astSpec); doc != nil {
 		docPragmas, docComment := parsePragmaComment(doc.Text())
 		comment := strings.TrimSpace(docComment)
+		if v, ok := docPragmas["collection"]; ok {
+			if v == nil {
+				spec.isCollection = true
+			} else {
+				var ok bool
+				spec.isCollection, ok = v.(bool)
+				if !ok {
+					return nil, fmt.Errorf("collection pragma %q, must be a valid boolean", v)
+				}
+			}
+		}
 		if raw, ok := docPragmas["deprecated"]; ok {
 			reason := ""
 			if str, _ := raw.(string); str != "" {
@@ -141,6 +152,17 @@ func (ps *parseState) parseGoStruct(t *types.Struct, named *types.Named) (*parse
 				fieldSpec.isPrivate, _ = v.(bool)
 			}
 		}
+		if v, ok := pragmas["keys"]; ok {
+			if v == nil {
+				fieldSpec.isCollectionKeys = true
+			} else {
+				var ok bool
+				fieldSpec.isCollectionKeys, ok = v.(bool)
+				if !ok {
+					return nil, fmt.Errorf("keys pragma %q, must be a valid boolean", v)
+				}
+			}
+		}
 		if raw, ok := pragmas["deprecated"]; ok {
 			reason := ""
 			if str, _ := raw.(string); str != "" {
@@ -167,11 +189,12 @@ func (ps *parseState) parseGoStruct(t *types.Struct, named *types.Named) (*parse
 }
 
 type parsedObjectType struct {
-	name       string
-	moduleName string
-	doc        string
-	sourceMap  *sourceMap
-	deprecated *string
+	name         string
+	moduleName   string
+	doc          string
+	sourceMap    *sourceMap
+	deprecated   *string
+	isCollection bool
 
 	fields      []*fieldSpec
 	methods     []*funcTypeSpec
@@ -199,8 +222,35 @@ func (spec *parsedObjectType) TypeDefCode() (*Statement, error) {
 	if len(withObjectOptsCode) > 0 {
 		withObjectArgsCode = append(withObjectArgsCode, Id("dagger").Dot("TypeDefWithObjectOpts").Values(withObjectOptsCode...))
 	}
+	var collectionKeys []*fieldSpec
+	for _, field := range spec.fields {
+		if field.isCollectionKeys {
+			collectionKeys = append(collectionKeys, field)
+		}
+	}
+	var collectionGets []*funcTypeSpec
+	for _, method := range spec.methods {
+		if method.isCollectionGet {
+			collectionGets = append(collectionGets, method)
+		}
+	}
+	if !spec.isCollection && (len(collectionKeys) > 0 || len(collectionGets) > 0) {
+		return nil, fmt.Errorf(
+			"object %s uses collection member pragmas without +collection",
+			spec.name,
+		)
+	}
+	if len(collectionKeys) > 1 {
+		return nil, fmt.Errorf("collection object %s has multiple +keys fields", spec.name)
+	}
+	if len(collectionGets) > 1 {
+		return nil, fmt.Errorf("collection object %s has multiple +get methods", spec.name)
+	}
 
 	typeDefCode := Qual("dag", "TypeDef").Call().Dot("WithObject").Call(withObjectArgsCode...)
+	if spec.isCollection {
+		typeDefCode = dotLine(typeDefCode, "WithCollection").Call()
+	}
 
 	for _, method := range spec.methods {
 		fnTypeDefCode, err := method.TypeDefCode()
@@ -247,6 +297,14 @@ func (spec *parsedObjectType) TypeDefCode() (*Statement, error) {
 			return nil, fmt.Errorf("failed to convert constructor to function def: %w", err)
 		}
 		typeDefCode = dotLine(typeDefCode, "WithConstructor").Call(Add(Line(), fnTypeDefCode))
+	}
+
+	if len(collectionKeys) == 1 {
+		typeDefCode = dotLine(typeDefCode, "WithCollectionKeys").Call(Lit(collectionKeys[0].name))
+	}
+
+	if len(collectionGets) == 1 {
+		typeDefCode = dotLine(typeDefCode, "WithCollectionGet").Call(Lit(collectionGets[0].name))
 	}
 
 	return typeDefCode, nil
@@ -565,6 +623,8 @@ type fieldSpec struct {
 
 	// isPrivate is true if the field is marked with the +private pragma
 	isPrivate bool
+	// isCollectionKeys is true if the field is marked with the +keys pragma
+	isCollectionKeys bool
 	// goName is the name of the field in the Go struct. It may be different than name if the user changed the name of the field via a json tag
 	goName string
 

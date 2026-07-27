@@ -1076,6 +1076,15 @@ func (r *Binding) AsCloud() *Cloud {
 	}
 }
 
+// Retrieve the binding value, as type CollectionTypeDef
+func (r *Binding) AsCollectionTypeDef() *CollectionTypeDef {
+	q := r.query.Select("asCollectionTypeDef")
+
+	return &CollectionTypeDef{
+		query: q,
+	}
+}
+
 // Retrieve the binding value, as type Container
 func (r *Binding) AsContainer() *Container {
 	q := r.query.Select("asContainer")
@@ -1969,6 +1978,94 @@ func (r *Cloud) TraceURL(ctx context.Context) (string, error) {
 // AsNode returns this Cloud as a Node.
 // This is a local type conversion — no GraphQL call.
 func (r *Cloud) AsNode() Node {
+	return &NodeClient{
+		query: r.query,
+	}
+}
+
+// A definition of collection semantics layered on top of an object type.
+type CollectionTypeDef struct {
+	query *querybuilder.Selection
+
+	id *ID
+}
+
+func (r *CollectionTypeDef) WithGraphQLQuery(q *querybuilder.Selection) *CollectionTypeDef {
+	return &CollectionTypeDef{
+		query: q,
+	}
+}
+
+// The synthetic batch type exposed for collection-level operations, if any.
+func (r *CollectionTypeDef) BatchType() *TypeDef {
+	q := r.query.Select("batchType")
+
+	return &TypeDef{
+		query: q,
+	}
+}
+
+// A unique identifier for this CollectionTypeDef.
+func (r *CollectionTypeDef) ID(ctx context.Context) (ID, error) {
+	if r.id != nil {
+		return *r.id, nil
+	}
+	q := r.query.Select("id")
+
+	var response ID
+
+	q = q.Bind(&response)
+	return response, q.Execute(ctx)
+}
+
+// XXX_GraphQLType is an internal function. It returns the native GraphQL type name
+func (r *CollectionTypeDef) XXX_GraphQLType() string {
+	return "CollectionTypeDef"
+}
+
+// XXX_GraphQLIDType is an internal function. It returns the native GraphQL type name for the ID of this object
+func (r *CollectionTypeDef) XXX_GraphQLIDType() string {
+	return "ID"
+}
+
+// XXX_GraphQLID is an internal function. It returns the underlying type ID
+func (r *CollectionTypeDef) XXX_GraphQLID(ctx context.Context) (string, error) {
+	id, err := r.ID(ctx)
+	if err != nil {
+		return "", err
+	}
+	return string(id), nil
+}
+
+func (r *CollectionTypeDef) MarshalJSON() ([]byte, error) {
+	id, err := r.ID(marshalCtx)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(id)
+}
+
+// The type accepted by get(key) and subset(keys: ...).
+func (r *CollectionTypeDef) KeyType() *TypeDef {
+	q := r.query.Select("keyType")
+
+	return &TypeDef{
+		query: q,
+	}
+}
+
+// The type returned by get() and enumerated by list.
+func (r *CollectionTypeDef) ValueType() *TypeDef {
+	q := r.query.Select("valueType")
+
+	return &TypeDef{
+		query: q,
+	}
+}
+
+// AsNode returns this CollectionTypeDef as a Node.
+// This is a local type conversion — no GraphQL call.
+func (r *CollectionTypeDef) AsNode() Node {
 	return &NodeClient{
 		query: r.query,
 	}
@@ -6926,6 +7023,30 @@ func (r *Env) WithCloudInput(name string, value *Cloud, description string) *Env
 // Declare a desired Cloud output to be assigned in the environment
 func (r *Env) WithCloudOutput(name string, description string) *Env {
 	q := r.query.Select("withCloudOutput")
+	q = q.Arg("name", name)
+	q = q.Arg("description", description)
+
+	return &Env{
+		query: q,
+	}
+}
+
+// Create or update a binding of type CollectionTypeDef in the environment
+func (r *Env) WithCollectionTypeDefInput(name string, value *CollectionTypeDef, description string) *Env {
+	assertNotNil("value", value)
+	q := r.query.Select("withCollectionTypeDefInput")
+	q = q.Arg("name", name)
+	q = q.Arg("value", value)
+	q = q.Arg("description", description)
+
+	return &Env{
+		query: q,
+	}
+}
+
+// Declare a desired CollectionTypeDef output to be assigned in the environment
+func (r *Env) WithCollectionTypeDefOutput(name string, description string) *Env {
+	q := r.query.Select("withCollectionTypeDefOutput")
 	q = q.Arg("name", name)
 	q = q.Arg("description", description)
 
@@ -16064,6 +16185,15 @@ func (r *TypeDef) WithGraphQLQuery(q *querybuilder.Selection) *TypeDef {
 	}
 }
 
+// If kind is OBJECT and the object is a collection, the collection-specific type definition. If the type is not a collection, this will be null.
+func (r *TypeDef) AsCollection() *CollectionTypeDef {
+	q := r.query.Select("asCollection")
+
+	return &CollectionTypeDef{
+		query: q,
+	}
+}
+
 // If kind is ENUM, the enum-specific type definition. If kind is not ENUM, this will be null.
 func (r *TypeDef) AsEnum() *EnumTypeDef {
 	q := r.query.Select("asEnum")
@@ -16195,6 +16325,35 @@ func (r *TypeDef) Optional(ctx context.Context) (bool, error) {
 
 	q = q.Bind(&response)
 	return response, q.Execute(ctx)
+}
+
+// Marks an object TypeDef as a collection.
+func (r *TypeDef) WithCollection() *TypeDef {
+	q := r.query.Select("withCollection")
+
+	return &TypeDef{
+		query: q,
+	}
+}
+
+// Marks the named function as the collection get function.
+func (r *TypeDef) WithCollectionGet(name string) *TypeDef {
+	q := r.query.Select("withCollectionGet")
+	q = q.Arg("name", name)
+
+	return &TypeDef{
+		query: q,
+	}
+}
+
+// Marks the named field as the collection keys field.
+func (r *TypeDef) WithCollectionKeys(name string) *TypeDef {
+	q := r.query.Select("withCollectionKeys")
+	q = q.Arg("name", name)
+
+	return &TypeDef{
+		query: q,
+	}
 }
 
 // Adds a function for constructing a new instance of an Object TypeDef, failing if the type is not an object.

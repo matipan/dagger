@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 
 	"dagger.io/dagger"
 	"github.com/dagger/dagger/engine/client"
@@ -15,13 +16,31 @@ import (
 const artifactTypeDimension = "type"
 
 type artifactListDimension struct {
-	Name string
+	Name    string
+	Aliases []string
+}
+
+type artifactFilterSelection struct {
+	coordinates map[string][]string
+	presence    map[string]bool
+}
+
+type artifactFilterFlagValues struct {
+	coordinates     map[string]*[]string
+	presence        map[string]*bool
+	aliasDimensions map[string]string
 }
 
 var listNeedsHelp bool
+var listArtifactArgs []string
+var listCheckScope bool
+var listGenerateScope bool
 
 func init() {
 	moduleAddFlags(listCmd, listCmd.PersistentFlags(), true)
+	listCmd.Flags().BoolVar(&listCheckScope, "check", false, "List values in check scope")
+	listCmd.Flags().BoolVar(&listGenerateScope, "generate", false, "List values in generate scope")
+	listCmd.MarkFlagsMutuallyExclusive("check", "generate")
 }
 
 var listCmd = &cobra.Command{
@@ -34,16 +53,9 @@ var listCmd = &cobra.Command{
 	DisableFlagsInUseLine: true,
 
 	PreRunE: func(cmd *cobra.Command, args []string) error {
-		cmd.DisableFlagParsing = false
-		listNeedsHelp = slices.Contains(args, "--help") || slices.Contains(args, "-h")
-
-		cmd.Flags().SetInterspersed(false)
-		cmd.FParseErrWhitelist.UnknownFlags = true
-		if err := cmd.ParseFlags(args); err != nil {
-			return cmd.FlagErrorFunc()(cmd, err)
-		}
-		cmd.FParseErrWhitelist.UnknownFlags = false
-		return nil
+		var err error
+		listArtifactArgs, listNeedsHelp, err = prepareExecutionPlanCommand(cmd, args)
+		return err
 	},
 
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -52,13 +64,13 @@ var listCmd = &cobra.Command{
 			dag := engineClient.Dagger()
 			artifacts := dag.CurrentWorkspace().Artifacts()
 
-			dimensions, err := loadArtifactListDimensions(ctx, artifacts)
+			dimensions, err := loadArtifactListDimensions(ctx, dag, artifacts, false)
 			if err != nil {
 				return err
 			}
 			if listNeedsHelp {
 				target := ""
-				helpArgs := stripHelpArgs(cmd.Flags().Args())
+				helpArgs := stripHelpArgs(listArtifactArgs)
 				if len(helpArgs) > 0 {
 					target, _, err = parseArtifactListArgs(helpArgs, dimensions)
 					if err != nil {
@@ -69,22 +81,39 @@ var listCmd = &cobra.Command{
 				return nil
 			}
 
-			target, filters, err := parseArtifactListArgs(cmd.Flags().Args(), dimensions)
+			target, filters, err := parseArtifactListArgs(listArtifactArgs, dimensions)
 			if err != nil {
 				return err
 			}
-			return printArtifactDimensionValues(ctx, cmd, artifacts, target, filters)
+			var verb dagger.Verb
+			switch {
+			case listCheckScope:
+				verb = dagger.VerbCheck
+			case listGenerateScope:
+				verb = dagger.VerbGenerate
+			}
+			return printArtifactDimensionValues(ctx, cmd, artifacts, target, filters, verb)
 		})
 	},
 }
 
 func loadArtifactListDimensions(
 	ctx context.Context,
+	dag *dagger.Client,
 	artifacts *dagger.Artifacts,
+	bestEffort bool,
 ) ([]artifactListDimension, error) {
 	apiDimensions, err := artifacts.Dimensions(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	aliases := map[string][]string{}
+	if dag != nil {
+		aliases, err = loadCollectionDimensionAliases(ctx, dag)
+		if err != nil && !bestEffort {
+			return nil, err
+		}
 	}
 
 	dimensions := make([]artifactListDimension, 0, len(apiDimensions))
@@ -93,37 +122,83 @@ func loadArtifactListDimensions(
 		if err != nil {
 			return nil, err
 		}
-		dimensions = append(dimensions, artifactListDimension{Name: name})
+		dimensions = append(dimensions, artifactListDimension{
+			Name:    name,
+			Aliases: aliases[name],
+		})
 	}
 	return dimensions, nil
+}
+
+func loadCollectionDimensionAliases(
+	ctx context.Context,
+	dag *dagger.Client,
+) (map[string][]string, error) {
+	var result struct {
+		CurrentTypeDefs []struct {
+			AsObject *struct {
+				Name string
+			}
+			AsCollection *struct {
+				ValueType struct {
+					AsObject *struct {
+						Name string
+					}
+				}
+			}
+		}
+	}
+	err := dag.Do(ctx, &dagger.Request{
+		Query: `query ArtifactCollectionAliases {
+			currentTypeDefs(hideCore: true, returnAllTypes: true) {
+				asObject { name }
+				asCollection {
+					valueType { asObject { name } }
+				}
+			}
+		}`,
+		OpName: "ArtifactCollectionAliases",
+	}, &dagger.Response{Data: &result})
+	if err != nil {
+		return nil, err
+	}
+
+	aliases := map[string][]string{}
+	for _, typeDef := range result.CurrentTypeDefs {
+		if typeDef.AsObject == nil ||
+			typeDef.AsCollection == nil ||
+			typeDef.AsCollection.ValueType.AsObject == nil {
+			continue
+		}
+		dimension := cliName(typeDef.AsCollection.ValueType.AsObject.Name)
+		alias := cliName(typeDef.AsObject.Name)
+		if !slices.Contains(aliases[dimension], alias) {
+			aliases[dimension] = append(aliases[dimension], alias)
+			sort.Strings(aliases[dimension])
+		}
+	}
+	return aliases, nil
 }
 
 func parseArtifactListArgs(
 	args []string,
 	dimensions []artifactListDimension,
-) (string, map[string][]string, error) {
+) (string, artifactFilterSelection, error) {
 	flags := pflag.NewFlagSet("list", pflag.ContinueOnError)
 	flags.SetInterspersed(true)
 	flags.SetOutput(stderr)
 
-	filterValues := make(map[string]*[]string, len(dimensions))
-	for _, dimension := range dimensions {
-		values := new([]string)
-		filterValues[dimension.Name] = values
-		flags.StringArrayVar(
-			values,
-			dimension.Name,
-			nil,
-			fmt.Sprintf("Filter by artifact dimension %q", dimension.Name),
-		)
+	filterValues, err := addArtifactFilterFlags(flags, dimensions)
+	if err != nil {
+		return "", artifactFilterSelection{}, err
 	}
-	if err := flags.Parse(stripHelpArgs(args)); err != nil {
-		return "", nil, err
+	if err := filterValues.parse(flags, stripHelpArgs(args)); err != nil {
+		return "", artifactFilterSelection{}, err
 	}
 
 	positionals := flags.Args()
 	if len(positionals) != 1 {
-		return "", nil, fmt.Errorf("accepts 1 arg(s), received %d", len(positionals))
+		return "", artifactFilterSelection{}, fmt.Errorf("accepts 1 arg(s), received %d", len(positionals))
 	}
 
 	target := positionals[0]
@@ -133,14 +208,140 @@ func parseArtifactListArgs(
 	if !slices.ContainsFunc(dimensions, func(dimension artifactListDimension) bool {
 		return dimension.Name == target
 	}) {
-		return "", nil, fmt.Errorf("artifact dimension %q not found", positionals[0])
+		return "", artifactFilterSelection{}, fmt.Errorf("artifact dimension %q not found", positionals[0])
 	}
 
-	filters := make(map[string][]string, len(filterValues))
-	for dimension, values := range filterValues {
-		filters[dimension] = *values
+	return target, filterValues.selection(dimensions), nil
+}
+
+func addArtifactFilterFlags(
+	flags *pflag.FlagSet,
+	dimensions []artifactListDimension,
+) (*artifactFilterFlagValues, error) {
+	filterNames := make(map[string]string, len(dimensions))
+	for _, dimension := range dimensions {
+		if existing, found := filterNames[dimension.Name]; found {
+			return nil, fmt.Errorf(
+				"artifact filter %q conflicts with filter %q",
+				dimension.Name,
+				existing,
+			)
+		}
+		if existing := flags.Lookup(dimension.Name); existing != nil {
+			return nil, fmt.Errorf(
+				"artifact filter %q conflicts with filter %q",
+				dimension.Name,
+				existing.Name,
+			)
+		}
+		filterNames[dimension.Name] = dimension.Name
 	}
-	return target, filters, nil
+	for _, dimension := range dimensions {
+		for _, alias := range dimension.Aliases {
+			if existing, found := filterNames[alias]; found {
+				return nil, fmt.Errorf(
+					"artifact collection alias %q conflicts with filter %q",
+					alias,
+					existing,
+				)
+			}
+			if existing := flags.Lookup(alias); existing != nil {
+				return nil, fmt.Errorf(
+					"artifact collection alias %q conflicts with filter %q",
+					alias,
+					existing.Name,
+				)
+			}
+			filterNames[alias] = alias
+		}
+	}
+
+	values := &artifactFilterFlagValues{
+		coordinates:     make(map[string]*[]string, len(dimensions)),
+		presence:        map[string]*bool{},
+		aliasDimensions: map[string]string{},
+	}
+	for _, dimension := range dimensions {
+		coordinates := new([]string)
+		values.coordinates[dimension.Name] = coordinates
+		flags.StringArrayVar(
+			coordinates,
+			dimension.Name,
+			nil,
+			fmt.Sprintf("Filter by artifact dimension %q", dimension.Name),
+		)
+		for _, alias := range dimension.Aliases {
+			present := new(bool)
+			values.presence[alias] = present
+			values.aliasDimensions[alias] = dimension.Name
+			flags.BoolVar(
+				present,
+				alias,
+				false,
+				fmt.Sprintf("Filter to artifacts in collection %q", alias),
+			)
+		}
+	}
+	return values, nil
+}
+
+func (values *artifactFilterFlagValues) parse(flags *pflag.FlagSet, args []string) error {
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "--") {
+			continue
+		}
+		nameValue := strings.TrimPrefix(arg, "--")
+		name, _, hasValue := strings.Cut(nameValue, "=")
+		if _, alias := values.aliasDimensions[name]; alias && hasValue {
+			return fmt.Errorf("flag --%s does not accept a value", name)
+		}
+	}
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	for dimension, coordinates := range values.coordinates {
+		for _, coordinate := range *coordinates {
+			if strings.Contains(coordinate, ",") {
+				return fmt.Errorf(
+					"flag --%s must be repeated for multiple values; comma-separated values are not supported",
+					dimension,
+				)
+			}
+		}
+	}
+	return nil
+}
+
+func (values *artifactFilterFlagValues) selection(
+	dimensions []artifactListDimension,
+) artifactFilterSelection {
+	selection := artifactFilterSelection{
+		coordinates: make(map[string][]string, len(values.coordinates)),
+		presence:    make(map[string]bool, len(dimensions)),
+	}
+	for dimension, coordinates := range values.coordinates {
+		selection.coordinates[dimension] = slices.Clone(*coordinates)
+	}
+	for alias, present := range values.presence {
+		if *present {
+			selection.presence[values.aliasDimensions[alias]] = true
+		}
+	}
+	return selection
+}
+
+func (selection artifactFilterSelection) apply(
+	artifacts *dagger.Artifacts,
+	dimensions []artifactListDimension,
+) *dagger.Artifacts {
+	for _, dimension := range dimensions {
+		if coordinates := selection.coordinates[dimension.Name]; len(coordinates) > 0 {
+			artifacts = artifacts.FilterCoordinates(dimension.Name, coordinates)
+		} else if selection.presence[dimension.Name] {
+			artifacts = artifacts.FilterDimension(dimension.Name)
+		}
+	}
+	return artifacts
 }
 
 func printArtifactDimensionValues(
@@ -148,22 +349,25 @@ func printArtifactDimensionValues(
 	cmd *cobra.Command,
 	artifacts *dagger.Artifacts,
 	target string,
-	filters map[string][]string,
+	filters artifactFilterSelection,
+	verb dagger.Verb,
 ) error {
-	filterDimensions := make([]string, 0, len(filters))
-	for dimension := range filters {
-		filterDimensions = append(filterDimensions, dimension)
+	dimensions, err := artifacts.Dimensions(ctx)
+	if err != nil {
+		return err
 	}
-	sort.Strings(filterDimensions)
-	for _, dimension := range filterDimensions {
-		values := filters[dimension]
-		if len(values) > 0 {
-			artifacts = artifacts.FilterCoordinates(dimension, values)
+	dimensionNames := make([]artifactListDimension, 0, len(dimensions))
+	for i := range dimensions {
+		name, err := dimensions[i].Name(ctx)
+		if err != nil {
+			return err
 		}
+		dimensionNames = append(dimensionNames, artifactListDimension{Name: name})
 	}
+	artifacts = filters.apply(artifacts, dimensionNames)
 	artifacts = artifacts.FilterDimension(target)
 
-	items, err := artifacts.Items(ctx)
+	items, err := artifactListItems(ctx, artifacts, verb)
 	if err != nil {
 		return err
 	}
@@ -183,6 +387,30 @@ func printArtifactDimensionValues(
 	return nil
 }
 
+func artifactListItems(
+	ctx context.Context,
+	artifacts *dagger.Artifacts,
+	verb dagger.Verb,
+) ([]dagger.Artifact, error) {
+	if verb == "" {
+		return artifacts.Items(ctx)
+	}
+
+	nodes, err := artifacts.Plan(verb).Nodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var items []dagger.Artifact
+	for i := range nodes {
+		targetItems, err := nodes[i].Target().Items(ctx)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, targetItems...)
+	}
+	return items, nil
+}
+
 func printArtifactListHelp(
 	cmd *cobra.Command,
 	dimensions []artifactListDimension,
@@ -198,6 +426,9 @@ func printArtifactListHelp(
 			fmt.Fprintln(out, "\nFlags:")
 			for _, dimension := range dimensions {
 				fmt.Fprintf(out, "  --%s stringArray\n", dimension.Name)
+				for _, alias := range dimension.Aliases {
+					fmt.Fprintf(out, "  --%s\n", alias)
+				}
 			}
 		}
 		return

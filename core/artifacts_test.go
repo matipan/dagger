@@ -61,6 +61,42 @@ func TestArtifactsFilterCoordinates(t *testing.T) {
 	require.EqualError(t, err, `artifact dimension "missing" not found`)
 }
 
+func TestArtifactsDiscoverCollectionDimensions(t *testing.T) {
+	b := newCollectionTestBuilder(t)
+	itemType := b.object("GoTest")
+	collectionType := b.collection(
+		"GoTests",
+		"keys",
+		"get",
+		b.primitive(TypeDefKindString),
+		itemType,
+	)
+	require.NoError(t, (&Module{}).validateCollectionTypeDef(collectionType))
+
+	goType := b.object("Go")
+	objectTypeDef(goType).Fields = append(
+		objectTypeDef(goType).Fields,
+		b.field("tests", collectionType),
+	)
+	typeDefs := artifactTestTypeDefs(t, &Function{
+		Name:             "go",
+		SourceModuleName: "module",
+		ReturnType:       b.typeDefResult(goType),
+	})
+	typeDefs = append(
+		typeDefs,
+		b.typeDefResult(goType),
+		b.typeDefResult(collectionType),
+		b.typeDefResult(itemType),
+	)
+
+	artifacts := NewArtifactsFromTypeDefs(typeDefs)
+	require.Equal(t, []string{"type", "go-test"}, artifactDimensionNames(artifacts))
+	require.Equal(t, TypeDefKindString, artifacts.dimensions[1].KeyType.Kind)
+	require.Equal(t, []string{"go-tests"}, artifacts.dimensions[1].collectionTypes)
+	require.False(t, artifacts.rows[0].coordinates[1].Valid)
+}
+
 func TestArtifactsFilterDimensionAndScope(t *testing.T) {
 	artifacts := NewArtifactsFromTypeDefs(artifactTestTypeDefs(t,
 		artifactTestRoot(t, "go", "Go"),

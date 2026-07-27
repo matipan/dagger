@@ -3,7 +3,6 @@ package daggercmd
 import (
 	"testing"
 
-	"dagger.io/dagger"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -76,28 +75,18 @@ func TestPrepareExecutionPlanCommandAcceptsAttachedShorthandValue(t *testing.T) 
 	require.Equal(t, []string{"lint"}, artifactArgs)
 }
 
-func TestParseExecutionPlanFilters(t *testing.T) {
-	filters, include, err := parseExecutionPlanFilters([]string{
-		"--type=go",
-		"lint",
-		"--go-test", "TestFoo",
-		"--type", "js",
-		"tests:**",
-	})
+func TestPrepareExecutionPlanCommandDoesNotConsumeCollectionAliasValue(t *testing.T) {
+	command := &cobra.Command{
+		Use:                "check",
+		DisableFlagParsing: true,
+	}
+
+	artifactArgs, _, err := prepareExecutionPlanCommand(
+		command,
+		[]string{"--go-tests", "lint"},
+	)
 	require.NoError(t, err)
-	require.Equal(t, []executionPlanDimensionFilter{
-		{name: "type", values: []string{"go", "js"}},
-		{name: "go-test", values: []string{"TestFoo"}},
-	}, filters)
-	require.Equal(t, []dagger.FunctionPattern{"lint", "tests:**"}, include)
-}
-
-func TestParseExecutionPlanFiltersErrors(t *testing.T) {
-	_, _, err := parseExecutionPlanFilters([]string{"--"})
-	require.EqualError(t, err, `invalid artifact filter "--"`)
-
-	_, _, err = parseExecutionPlanFilters([]string{"--type"})
-	require.EqualError(t, err, "flag needs an argument: --type")
+	require.Equal(t, []string{"--go-tests", "lint"}, artifactArgs)
 }
 
 func TestExecutionPlanRowLabelUsesOnlyVaryingCoordinates(t *testing.T) {

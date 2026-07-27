@@ -93,15 +93,17 @@ var _ dagql.ScalarType = FunctionPattern("")
 
 // Action is one exact invocation on an artifact target.
 type Action struct {
-	verb              Verb
-	target            *Artifacts
-	functionPath      []string
-	apiPath           []string
-	rootField         string
-	sourceModuleName  string
-	collectionBatched bool
-	afterIDs          []dagql.ID[*Action]
-	portMappings      []PortForward
+	verb                 Verb
+	target               *Artifacts
+	functionPath         []string
+	apiPath              []string
+	selectorPath         []dagql.Selector
+	rootField            string
+	sourceModuleName     string
+	collectionBatched    bool
+	collectionOccurrence string
+	afterIDs             []dagql.ID[*Action]
+	portMappings         []PortForward
 }
 
 func (*Action) Type() *ast.Type {
@@ -117,6 +119,7 @@ func (action *Action) Clone() *Action {
 	cp.target = action.target.Clone()
 	cp.functionPath = slices.Clone(action.functionPath)
 	cp.apiPath = slices.Clone(action.apiPath)
+	cp.selectorPath = cloneSelectors(action.selectorPath)
 	cp.afterIDs = slices.Clone(action.afterIDs)
 	cp.portMappings = slices.Clone(action.portMappings)
 	return &cp
@@ -245,6 +248,25 @@ func (artifact *Artifact) Actions(verbs []Verb) ([]*Action, error) {
 		return nil, fmt.Errorf("artifact root type %q not found", artifact.rootType)
 	}
 
+	actions, err := artifact.discoverActions(root, selected, allVerbs, false)
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(actions, func(i, j int) bool {
+		if actions[i].verb != actions[j].verb {
+			return actions[i].verb < actions[j].verb
+		}
+		return actions[i].displayName() < actions[j].displayName()
+	})
+	return actions, nil
+}
+
+func (artifact *Artifact) discoverActions(
+	root *ObjectTypeDef,
+	selected map[Verb]struct{},
+	allVerbs bool,
+	collectionBatched bool,
+) ([]*Action, error) {
 	var actions []*Action
 	var walk func(*ObjectTypeDef, []string, []string, map[string]struct{}) error
 	walk = func(
@@ -266,6 +288,9 @@ func (artifact *Artifact) Actions(verbs []Verb) ([]*Action, error) {
 			}
 			fieldType := field.TypeDef.Self()
 			if !fieldType.AsObject.Valid || fieldType.AsObject.Value.Self() == nil {
+				continue
+			}
+			if fieldType.AsCollection.Valid {
 				continue
 			}
 			childType := fieldType.AsObject.Value.Self().Name
@@ -299,12 +324,18 @@ func (artifact *Artifact) Actions(verbs []Verb) ([]*Action, error) {
 			nextAPIPath := appendPath(apiPath, fn.Name)
 
 			for _, verb := range functionVerbs(fn) {
+				var action *Action
+				if collectionBatched {
+					action = artifact.newBatchAction(verb, nextFunctionPath, nextAPIPath)
+				} else {
+					action = artifact.newAction(verb, nextFunctionPath, nextAPIPath)
+				}
 				if allVerbs {
-					actions = append(actions, artifact.newAction(verb, nextFunctionPath, nextAPIPath))
+					actions = append(actions, action)
 					continue
 				}
 				if _, wanted := selected[verb]; wanted {
-					actions = append(actions, artifact.newAction(verb, nextFunctionPath, nextAPIPath))
+					actions = append(actions, action)
 				}
 			}
 
@@ -313,6 +344,9 @@ func (artifact *Artifact) Actions(verbs []Verb) ([]*Action, error) {
 			}
 			returnType := fn.ReturnType.Self()
 			if !returnType.AsObject.Valid || returnType.AsObject.Value.Self() == nil {
+				continue
+			}
+			if returnType.AsCollection.Valid {
 				continue
 			}
 			childType := returnType.AsObject.Value.Self().Name
@@ -333,12 +367,6 @@ func (artifact *Artifact) Actions(verbs []Verb) ([]*Action, error) {
 	if err := walk(root, nil, nil, nil); err != nil {
 		return nil, err
 	}
-	sort.SliceStable(actions, func(i, j int) bool {
-		if actions[i].verb != actions[j].verb {
-			return actions[i].verb < actions[j].verb
-		}
-		return actions[i].displayName() < actions[j].displayName()
-	})
 	return actions, nil
 }
 
@@ -363,13 +391,74 @@ func (artifact *Artifact) Action(verb Verb, functionPath []string) (*Action, err
 
 func (artifact *Artifact) newAction(verb Verb, functionPath, apiPath []string) *Action {
 	return &Action{
-		verb:             verb,
-		target:           artifact.targetScope(),
-		functionPath:     slices.Clone(functionPath),
-		apiPath:          slices.Clone(apiPath),
-		rootField:        artifact.rootField,
-		sourceModuleName: artifact.sourceModuleName,
+		verb:                 verb,
+		target:               artifact.targetScope(),
+		functionPath:         slices.Clone(functionPath),
+		apiPath:              slices.Clone(apiPath),
+		selectorPath:         cloneSelectors(artifact.selectorPath),
+		rootField:            artifact.rootField,
+		sourceModuleName:     artifact.sourceModuleName,
+		collectionOccurrence: artifact.collectionOccurrence,
 	}
+}
+
+func (artifact *Artifact) newBatchAction(verb Verb, functionPath, apiPath []string) *Action {
+	action := artifact.newAction(verb, functionPath, apiPath)
+	action.collectionBatched = true
+	action.selectorPath = collectionBatchSelectorPath(
+		artifact.collectionPath,
+		artifact.collectionKeyType,
+		[]dagql.Input{artifact.collectionKey},
+	)
+	return action
+}
+
+func (artifact *Artifact) planActions(verb Verb) ([]*Action, error) {
+	itemActions, err := artifact.Actions([]Verb{verb})
+	if err != nil {
+		return nil, err
+	}
+	if artifact.collectionBatchType == "" {
+		return itemActions, nil
+	}
+	batch, found := artifact.scope.objects[artifact.collectionBatchType]
+	if !found {
+		return itemActions, nil
+	}
+	batchActions, err := artifact.discoverActions(
+		batch,
+		map[Verb]struct{}{verb: {}},
+		false,
+		true,
+	)
+	if err != nil {
+		return nil, err
+	}
+	for _, batchAction := range batchActions {
+		itemActions = slices.DeleteFunc(itemActions, func(itemAction *Action) bool {
+			return slices.Equal(batchAction.functionPath, itemAction.functionPath)
+		})
+		itemActions = append(itemActions, batchAction)
+	}
+	return itemActions, nil
+}
+
+func collectionBatchSelectorPath(
+	collectionPath []dagql.Selector,
+	keyType *TypeDef,
+	keys []dagql.Input,
+) []dagql.Selector {
+	path := appendSelector(collectionPath, dagql.Selector{
+		Field: collectionSubsetName,
+		Args: []dagql.NamedInput{{
+			Name: collectionKeysFieldName,
+			Value: dagql.DynamicArrayInput{
+				Elem:   keyType.ToInput(),
+				Values: slices.Clone(keys),
+			},
+		}},
+	})
+	return appendSelector(path, dagql.Selector{Field: collectionBatchFieldName})
 }
 
 func (artifacts *Artifacts) Plan(
@@ -397,7 +486,7 @@ func (artifacts *Artifacts) PlanWithSourceExcludes(
 	var nodes []*Action
 	typeCoordinates := artifacts.coordinateValues(ArtifactTypeDimension)
 	for _, artifact := range artifacts.Items() {
-		actions, err := artifact.Actions([]Verb{verb})
+		actions, err := artifact.planActions(verb)
 		if err != nil {
 			return nil, err
 		}
@@ -415,6 +504,19 @@ func (artifacts *Artifacts) PlanWithSourceExcludes(
 				nil,
 			) {
 				continue
+			}
+			if action.collectionBatched {
+				existingIndex := slices.IndexFunc(nodes, func(existing *Action) bool {
+					return existing.collectionBatched &&
+						existing.verb == action.verb &&
+						existing.sourceModuleName == action.sourceModuleName &&
+						existing.collectionOccurrence == action.collectionOccurrence &&
+						slices.Equal(existing.functionPath, action.functionPath)
+				})
+				if existingIndex >= 0 {
+					mergeCollectionBatchAction(nodes[existingIndex], action)
+					continue
+				}
 			}
 			if slices.ContainsFunc(nodes, func(existing *Action) bool {
 				return actionsEqual(existing, action)
@@ -434,6 +536,28 @@ func (artifacts *Artifacts) PlanWithSourceExcludes(
 		return nodes[i].displayName() < nodes[j].displayName()
 	})
 	return &Plan{verb: verb, nodes: nodes}, nil
+}
+
+func mergeCollectionBatchAction(target, additional *Action) {
+	for _, additionalRow := range additional.target.rows {
+		if slices.ContainsFunc(target.target.rows, func(existingRow *artifactRow) bool {
+			return artifactRowsEqual(existingRow, additionalRow)
+		}) {
+			continue
+		}
+		target.target.rows = append(target.target.rows, additionalRow.Clone())
+	}
+
+	first := target.target.rows[0]
+	keys := make([]dagql.Input, 0, len(target.target.rows))
+	for _, row := range target.target.rows {
+		keys = append(keys, row.collectionKey)
+	}
+	target.selectorPath = collectionBatchSelectorPath(
+		first.collectionPath,
+		first.collectionKeyType,
+		keys,
+	)
 }
 
 func (action *Action) Run(ctx context.Context) error {
@@ -839,8 +963,7 @@ func artifactScopesEqual(left, right *Artifacts) bool {
 	for _, leftRow := range left.rows {
 		match := -1
 		for rightIndex, rightRow := range right.rows {
-			if !matched[rightIndex] &&
-				compareCoordinateRows(leftRow.coordinates, rightRow.coordinates) == 0 {
+			if !matched[rightIndex] && artifactRowsEqual(leftRow, rightRow) {
 				match = rightIndex
 				break
 			}
@@ -851,6 +974,13 @@ func artifactScopesEqual(left, right *Artifacts) bool {
 		matched[match] = true
 	}
 	return true
+}
+
+func artifactRowsEqual(left, right *artifactRow) bool {
+	return left != nil &&
+		right != nil &&
+		compareCoordinateRows(left.coordinates, right.coordinates) == 0 &&
+		selectorPathString(left.selectorPath) == selectorPathString(right.selectorPath)
 }
 
 func (action *Action) runCheck(ctx context.Context) (rerr error) {
@@ -1255,13 +1385,20 @@ func (action *Action) selectionParent(
 	}
 
 	var parent dagql.AnyObjectResult = srv.Root()
-	for _, field := range append([]string{action.rootField}, action.apiPath[:len(action.apiPath)-1]...) {
+	selectors := cloneSelectors(action.selectorPath)
+	if len(selectors) == 0 {
+		selectors = []dagql.Selector{{Field: action.rootField}}
+	}
+	for _, field := range action.apiPath[:len(action.apiPath)-1] {
+		selectors = append(selectors, dagql.Selector{Field: field})
+	}
+	for _, selector := range selectors {
 		var next dagql.AnyObjectResult
 		if err := srv.Select(
 			dagql.WithNonInternalTelemetry(ctx),
 			parent,
 			&next,
-			dagql.Selector{Field: field},
+			selector,
 		); err != nil {
 			return nil, nil, "", err
 		}

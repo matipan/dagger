@@ -511,7 +511,93 @@ func buildCoreObjectLikeTypeDef[T dagql.Typed](
 	if err != nil {
 		return zero, false, err
 	}
+	if introspectionType.Directives.Directive("collection") != nil {
+		object, ok := any(obj.Self()).(*core.ObjectTypeDef)
+		if !ok {
+			return zero, false, fmt.Errorf(
+				"collection type %q is not an object",
+				introspectionType.Name,
+			)
+		}
+		collection, err := collectionTypeDefFromIntrospection(
+			introspectionType,
+			object,
+		)
+		if err != nil {
+			return zero, false, err
+		}
+		typeDef.Self().AsCollection = dagql.NonNull(collection)
+	}
 	return typeDef, true, nil
+}
+
+func collectionTypeDefFromIntrospection(
+	introspectionType *introspection.Type,
+	objectTypeDef *core.ObjectTypeDef,
+) (*core.CollectionTypeDef, error) {
+	var keysField, getField, batchField *introspection.Field
+	for _, field := range introspectionType.Fields {
+		switch {
+		case field.Directives.Directive("keys") != nil:
+			keysField = field
+		case field.Directives.Directive("get") != nil:
+			getField = field
+		case field.Name == "batch":
+			batchField = field
+		}
+	}
+	if keysField == nil {
+		return nil, fmt.Errorf("collection type %q has no @keys field", introspectionType.Name)
+	}
+	if getField == nil {
+		return nil, fmt.Errorf("collection type %q has no @get field", introspectionType.Name)
+	}
+
+	keysFn, ok := objectTypeDef.FunctionByName(keysField.Name)
+	if !ok || keysFn.ReturnType.Self() == nil ||
+		!keysFn.ReturnType.Self().AsList.Valid ||
+		keysFn.ReturnType.Self().AsList.Value.Self() == nil ||
+		keysFn.ReturnType.Self().AsList.Value.Self().ElementTypeDef.Self() == nil {
+		return nil, fmt.Errorf(
+			"collection type %q @keys field must return a list",
+			introspectionType.Name,
+		)
+	}
+	getFn, ok := objectTypeDef.FunctionByName(getField.Name)
+	if !ok || getFn.ReturnType.Self() == nil {
+		return nil, fmt.Errorf(
+			"collection type %q @get field has no return type",
+			introspectionType.Name,
+		)
+	}
+	if len(getFn.Args) != 1 || getFn.Args[0].Self() == nil {
+		return nil, fmt.Errorf(
+			"collection type %q @get field must take exactly one argument",
+			introspectionType.Name,
+		)
+	}
+
+	collection := &core.CollectionTypeDef{
+		KeyType: keysFn.ReturnType.Self().
+			AsList.Value.Self().
+			ElementTypeDef.Self().
+			Clone(),
+		ValueType:       getFn.ReturnType.Self().Clone(),
+		KeysFieldName:   keysField.Name,
+		GetFunctionName: getField.Name,
+		GetArgName:      getFn.Args[0].Self().Name,
+	}
+	if batchField != nil {
+		batchFn, ok := objectTypeDef.FunctionByName(batchField.Name)
+		if !ok || batchFn.ReturnType.Self() == nil {
+			return nil, fmt.Errorf(
+				"collection type %q batch field has no return type",
+				introspectionType.Name,
+			)
+		}
+		collection.BatchType = batchFn.ReturnType.Self().Clone()
+	}
+	return collection, nil
 }
 
 //nolint:gocyclo // intrinsically long state machine; refactoring would hurt clarity

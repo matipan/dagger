@@ -65,6 +65,72 @@ func (CallSuite) TestHelp(ctx context.Context, t *testctx.T) {
 	})
 }
 
+func (CallSuite) TestCollections(ctx context.Context, t *testctx.T) {
+	c := connect(ctx, t)
+
+	modGen := workspaceBase(t, c).
+		With(initStandaloneGoModule("test", goCollectionModuleSource))
+
+	t.Run("keys", func(ctx context.Context, t *testctx.T) {
+		out, err := modGen.With(daggerCall("test", "tests", "keys")).Stdout(ctx)
+		require.NoError(t, err)
+		require.Equal(t, collectionKeysOutput, out)
+	})
+
+	t.Run("list", func(ctx context.Context, t *testctx.T) {
+		out, err := modGen.With(daggerCall("test", "tests", "list", "name")).Stdout(ctx)
+		require.NoError(t, err)
+		require.Equal(t, collectionKeysOutput, out)
+	})
+
+	t.Run("get uses the projected key argument", func(ctx context.Context, t *testctx.T) {
+		out, err := modGen.With(
+			daggerCall("test", "tests", "get", "--key", "unit", "name"),
+		).Stdout(ctx)
+		require.NoError(t, err)
+		require.Equal(t, "unit", out)
+	})
+
+	t.Run("subset preserves parent order", func(ctx context.Context, t *testctx.T) {
+		out, err := modGen.With(
+			daggerCall("test", "tests", "subset", "--keys", "integration", "--keys", "unit", "keys"),
+		).Stdout(ctx)
+		require.NoError(t, err)
+		require.Equal(t, collectionSubsetKeysOutput, out)
+	})
+
+	t.Run("batch reads the current subset", func(ctx context.Context, t *testctx.T) {
+		out, err := modGen.With(
+			daggerCall("test", "tests", "subset", "--keys", "integration", "--keys", "unit", "batch", "names"),
+		).Stdout(ctx)
+		require.NoError(t, err)
+		require.Equal(t, collectionBatchOutput, out)
+	})
+
+	t.Run("get rejects keys outside the current subset", func(ctx context.Context, t *testctx.T) {
+		_, err := modGen.With(
+			daggerCall("test", "tests", "subset", "--keys", "integration", "--keys", "unit", "get", "--key", "lint", "name"),
+		).Sync(ctx)
+		requireErrOut(t, err, `does not contain key "lint" in the current subset`)
+	})
+
+	t.Run("duplicate backing keys are rejected", func(ctx context.Context, t *testctx.T) {
+		duplicateSource := strings.Replace(
+			goCollectionModuleSource,
+			`[]string{"unit", "lint", "integration"}`,
+			`[]string{"unit", "unit"}`,
+			1,
+		)
+		duplicateMod := workspaceBase(t, c).
+			With(initStandaloneGoModule("test", duplicateSource))
+		_, err := duplicateMod.With(daggerCall("test", "tests", "keys")).Sync(ctx)
+		requireErrOut(t, err, `contains duplicate key "unit"`)
+
+		_, err = duplicateMod.With(daggerExec("list", "go-test")).Sync(ctx)
+		requireErrOut(t, err, `contains duplicate key "unit"`)
+	})
+}
+
 func (CallSuite) TestArgTypes(ctx context.Context, t *testctx.T) {
 	t.Run("service args", func(ctx context.Context, t *testctx.T) {
 		t.Run("used as service binding", func(ctx context.Context, t *testctx.T) {

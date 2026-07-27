@@ -482,6 +482,15 @@ func (s *moduleSchema) Install(dag *dagql.Server) {
 				dagql.Arg("sourceModuleName").Doc(`The module owning this object type.`).Internal(),
 			),
 
+		dagql.Func("withCollection", s.typeDefWithCollection).
+			Doc(`Marks an object TypeDef as a collection.`),
+
+		dagql.Func("withCollectionKeys", s.typeDefWithCollectionKeys).
+			Doc(`Marks the named field as the collection keys field.`),
+
+		dagql.Func("withCollectionGet", s.typeDefWithCollectionGet).
+			Doc(`Marks the named function as the collection get function.`),
+
 		dagql.Func("withInterface", s.typeDefWithInterface).
 			Doc(`Returns a TypeDef of kind Interface with the provided name.`).
 			Args(
@@ -547,6 +556,8 @@ func (s *moduleSchema) Install(dag *dagql.Server) {
 			Doc(`If kind is LIST, the list-specific type definition. If kind is not LIST, this will be null.`),
 		dagql.Func("asObject", s.typeDefAsObject).
 			Doc(`If kind is OBJECT, the object-specific type definition. If kind is not OBJECT, this will be null.`),
+		dagql.Func("asCollection", s.typeDefAsCollection).
+			Doc(`If kind is OBJECT and the object is a collection, the collection-specific type definition. If the type is not a collection, this will be null.`),
 		dagql.Func("asInterface", s.typeDefAsInterface).
 			Doc(`If kind is INTERFACE, the interface-specific type definition. If kind is not INTERFACE, this will be null.`),
 		dagql.Func("asInput", s.typeDefAsInput).
@@ -598,6 +609,7 @@ func (s *moduleSchema) Install(dag *dagql.Server) {
 	dagql.Fields[*core.ScalarTypeDef]{
 		dagql.Func("__withName", s.scalarTypeDefWithName),
 	}.Install(dag)
+	dagql.Fields[*core.CollectionTypeDef]{}.Install(dag)
 	dagql.Fields[*core.EnumTypeDef]{
 		dagql.Func("values", s.enumTypeDefValues).
 			Deprecated("use members instead").
@@ -1029,6 +1041,40 @@ func (s *moduleSchema) typeDefWithObject(ctx context.Context, def *core.TypeDef,
 		return nil, err
 	}
 	return def.WithObject(obj), nil
+}
+
+func (s *moduleSchema) typeDefWithCollection(
+	_ context.Context,
+	def *core.TypeDef,
+	_ struct{},
+) (*core.TypeDef, error) {
+	return def.WithCollection(), nil
+}
+
+func (s *moduleSchema) typeDefWithCollectionKeys(
+	_ context.Context,
+	def *core.TypeDef,
+	args struct {
+		Name string
+	},
+) (*core.TypeDef, error) {
+	if args.Name == "" {
+		return nil, fmt.Errorf("collection keys field name must not be empty")
+	}
+	return def.WithCollectionKeys(args.Name)
+}
+
+func (s *moduleSchema) typeDefWithCollectionGet(
+	_ context.Context,
+	def *core.TypeDef,
+	args struct {
+		Name string
+	},
+) (*core.TypeDef, error) {
+	if args.Name == "" {
+		return nil, fmt.Errorf("collection get function name must not be empty")
+	}
+	return def.WithCollectionGet(args.Name)
 }
 
 //nolint:dupl // symmetric with typeDefWithEnum; sharing hides the Interface vs Enum kinds

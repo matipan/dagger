@@ -39,6 +39,14 @@ func (s *moduleSchema) typeDefAsObject(
 	return typeDef.AsObject, nil
 }
 
+func (s *moduleSchema) typeDefAsCollection(
+	ctx context.Context,
+	typeDef *core.TypeDef,
+	_ struct{},
+) (dagql.Nullable[*core.CollectionTypeDef], error) {
+	return typeDef.AsCollection, nil
+}
+
 func (s *moduleSchema) typeDefAsInterface(
 	ctx context.Context,
 	typeDef *core.TypeDef,
