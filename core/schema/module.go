@@ -2281,19 +2281,25 @@ func expandTypeDefClosure(
 	queue := make([]dagql.ObjectResult[*core.TypeDef], 0, len(typeDefs))
 
 	enqueue := func(typeDef dagql.ObjectResult[*core.TypeDef]) error {
-		if typeDef.Self() == nil {
-			return nil
-		}
-		typeDef, err := normalizeReturnAllTypesTypeDef(ctx, dag, typeDef)
-		if err != nil {
-			return err
-		}
 		typeDefSelf := typeDef.Self()
 		if typeDefSelf == nil {
 			return nil
 		}
 		if typeDefSelf.Name == "" {
 			return fmt.Errorf("typedef %q missing canonical name", typeDefSelf.Kind)
+		}
+		if existing, found := canonicalByName[typeDefSelf.Name]; found &&
+			!typeDefIsStub(existing.Self()) {
+			return nil
+		}
+
+		typeDef, err := normalizeReturnAllTypesTypeDef(ctx, dag, typeDef)
+		if err != nil {
+			return err
+		}
+		typeDefSelf = typeDef.Self()
+		if typeDefSelf == nil {
+			return nil
 		}
 
 		if existing, found := canonicalByName[typeDefSelf.Name]; !found {
