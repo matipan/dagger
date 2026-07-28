@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"dagger.io/dagger"
@@ -172,6 +173,99 @@ type Tests @collection {
 				}
 			}
 		}`, out)
+	})
+
+	t.Run("identical keys in separate occurrences", func(ctx context.Context, t *testctx.T) {
+		duplicateOccurrences := workspaceBase(t, c).
+			With(initStandaloneDangModule("go", `
+type Go {
+  pub first: Tests! {
+    Tests(names: ["unit"])
+  }
+
+  pub second: Tests! {
+    Tests(names: ["unit"])
+  }
+}
+
+type Test {
+  pub lint: Void @check {
+    null
+  }
+
+  pub run: Void @check {
+    null
+  }
+}
+
+type Tests @collection {
+  pub names: [String!]! @keys
+
+  new(names: [String!]!) {
+    self.names = names
+    self
+  }
+
+  pub lookup(name: String!): Test! @get {
+    Test()
+  }
+
+  pub run: Void @check {
+    null
+  }
+}
+`))
+
+		out, err := duplicateOccurrences.With(daggerQuery(`{
+			currentWorkspace {
+				artifacts {
+					filterCoordinates(dimension: "go-test", values: ["unit"]) {
+						items {
+							coordinate(name: "go-test")
+						}
+						plan(verb: CHECK) {
+							nodes {
+								collectionBatched
+							}
+							run
+						}
+					}
+				}
+			}
+		}`)).Stdout(ctx)
+		require.NoError(t, err)
+
+		var result struct {
+			CurrentWorkspace struct {
+				Artifacts struct {
+					FilterCoordinates struct {
+						Items []struct {
+							Coordinate string `json:"coordinate"`
+						} `json:"items"`
+						Plan struct {
+							Nodes []struct {
+								CollectionBatched bool `json:"collectionBatched"`
+							} `json:"nodes"`
+						} `json:"plan"`
+					} `json:"filterCoordinates"`
+				} `json:"artifacts"`
+			} `json:"currentWorkspace"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(out), &result))
+
+		filtered := result.CurrentWorkspace.Artifacts.FilterCoordinates
+		require.Len(t, filtered.Items, 2)
+		for _, item := range filtered.Items {
+			require.Equal(t, "unit", item.Coordinate)
+		}
+		require.Len(t, filtered.Plan.Nodes, 4)
+		batched := 0
+		for _, node := range filtered.Plan.Nodes {
+			if node.CollectionBatched {
+				batched++
+			}
+		}
+		require.Equal(t, 2, batched)
 	})
 
 	t.Run("cli filters and aliases", func(ctx context.Context, t *testctx.T) {
