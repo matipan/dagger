@@ -85,6 +85,8 @@ func TestModuleTypeDefsProjectCollections(t *testing.T) {
 
 	rootProjected := objectTypeDef(typeByName["Go"])
 	require.NotNil(t, rootProjected)
+	require.True(t, rootProjected.IsMainObject)
+	require.False(t, projectedObj.IsMainObject)
 	testsField, ok := rootProjected.FieldByName("tests")
 	require.True(t, ok)
 	require.True(t, testsField.TypeDef.Self().AsCollection.Valid)

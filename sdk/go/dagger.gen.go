@@ -134,9 +134,6 @@ func (e *ExecError) Unwrap() error {
 	return e.original
 }
 
-// A glob pattern matching artifact-relative function paths.
-type FunctionPattern string
-
 // A unique identifier for an object.
 type ID string
 
@@ -147,6 +144,9 @@ type JSON string
 //
 // The format is [os]/[platform]/[version] (e.g., "darwin/arm64/v7", "windows/amd64", "linux/arm64").
 type Platform string
+
+// A glob pattern matching artifact fields or lifecycle action paths.
+type TargetPattern string
 
 // The absence of a value.
 //
@@ -572,8 +572,9 @@ func (r *Address) AsNode() Node {
 type Artifact struct {
 	query *querybuilder.Selection
 
-	coordinate *string
-	id         *ID
+	coordinate    *string
+	hasCoordinate *bool
+	id            *ID
 }
 
 func (r *Artifact) WithGraphQLQuery(q *querybuilder.Selection) *Artifact {
@@ -662,6 +663,30 @@ func (r *Artifact) Coordinates(ctx context.Context) ([]string, error) {
 	return response, q.Execute(ctx)
 }
 
+// Coordinate dimensions in artifact ancestry order.
+func (r *Artifact) CoordinateDimensions(ctx context.Context) ([]string, error) {
+	q := r.query.Select("coordinateDimensions")
+
+	var response []string
+
+	q = q.Bind(&response)
+	return response, q.Execute(ctx)
+}
+
+// Whether this artifact has a coordinate for one dimension.
+func (r *Artifact) HasCoordinate(ctx context.Context, name string) (bool, error) {
+	if r.hasCoordinate != nil {
+		return *r.hasCoordinate, nil
+	}
+	q := r.query.Select("hasCoordinate")
+	q = q.Arg("name", name)
+
+	var response bool
+
+	q = q.Bind(&response)
+	return response, q.Execute(ctx)
+}
+
 // A unique identifier for this Artifact.
 func (r *Artifact) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -731,6 +756,16 @@ func (r *ArtifactDimension) WithGraphQLQuery(q *querybuilder.Selection) *Artifac
 	return &ArtifactDimension{
 		query: q,
 	}
+}
+
+// Collection type names accepted as presence aliases for this dimension.
+func (r *ArtifactDimension) CollectionTypes(ctx context.Context) ([]string, error) {
+	q := r.query.Select("collectionTypes")
+
+	var response []string
+
+	q = q.Bind(&response)
+	return response, q.Execute(ctx)
 }
 
 // A unique identifier for this ArtifactDimension.
@@ -953,10 +988,10 @@ func (r *Artifacts) Items(ctx context.Context) ([]Artifact, error) {
 
 // ArtifactsPlanOpts contains options for Artifacts.Plan
 type ArtifactsPlanOpts struct {
-	// Only include matching artifact-relative function paths.
-	Include []FunctionPattern
-	// Exclude matching artifact-relative function paths.
-	Exclude []FunctionPattern
+	// Only include matching artifact fields or lifecycle action paths.
+	Include []TargetPattern
+	// Exclude matching artifact fields or lifecycle action paths.
+	Exclude []TargetPattern
 }
 
 // Compile matching artifact actions into an execution plan.

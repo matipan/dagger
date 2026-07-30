@@ -52,13 +52,15 @@ const collectionBatchOutput = "unit,integration"
 
 func initStandaloneGoModule(name, source string) dagger.WithContainerFunc {
 	return func(ctr *dagger.Container) *dagger.Container {
+		modulePath := "toolchains/" + name
 		return ctr.
 			WithNewFile("dagger.toml", "[modules]\n").
-			With(daggerExec("sdk", "install", "go")).
-			With(daggerExec("-y", "module", "init", "go", name, "--path", ".")).
-			WithNewFile("main.go", source).
-			With(daggerExec("install", ".")).
-			With(daggerExec("-y", "generate"))
+			WithNewFile(
+				modulePath+"/dagger.json",
+				`{"name":"`+name+`","engineVersion":"latest","sdk":{"source":"go"}}`,
+			).
+			WithNewFile(modulePath+"/main.go", source).
+			With(daggerExec("install", "./"+modulePath))
 	}
 }
 
@@ -68,6 +70,13 @@ func (WorkspaceSuite) TestCollectionArtifactsAndPlans(ctx context.Context, t *te
 		With(initStandaloneDangModule("go", `
 # Collection integration fixture.
 type Go {
+  pub engine: Test!
+
+  new() {
+    self.engine = Test()
+    self
+  }
+
   pub tests: Tests! {
     Tests(names: ["unit", "integration"])
   }
@@ -139,6 +148,9 @@ type Tests @collection {
 					}],
 					"filterCoordinates": {
 						"items": [{
+							"coordinates": ["go-test", "go:engine"],
+							"coordinate": "go:engine"
+						}, {
 							"coordinates": ["go-test", "integration"],
 							"coordinate": "integration"
 						}, {
@@ -147,6 +159,18 @@ type Tests @collection {
 						}],
 						"plan": {
 							"nodes": [{
+								"functionPath": ["lint"],
+								"collectionBatched": false,
+								"target": {"items": [{
+									"coordinates": ["go-test", "go:engine"]
+								}]}
+							}, {
+								"functionPath": ["run"],
+								"collectionBatched": false,
+								"target": {"items": [{
+									"coordinates": ["go-test", "go:engine"]
+								}]}
+							}, {
 								"functionPath": ["lint"],
 								"collectionBatched": false,
 								"target": {"items": [{
@@ -173,6 +197,152 @@ type Tests @collection {
 				}
 			}
 		}`, out)
+	})
+
+	t.Run("nested collection coordinates", func(ctx context.Context, t *testctx.T) {
+		nested := workspaceBase(t, c).
+			With(initStandaloneDangModule("go", `
+type Go {
+  pub modules: Modules! {
+    Modules(paths: ["api"])
+  }
+}
+
+type Modules @collection {
+  pub paths: [String!]! @keys
+
+  new(paths: [String!]!) {
+    self.paths = paths
+    self
+  }
+
+  pub module(path: String!): Module! @get {
+    Module(path: path)
+  }
+}
+
+type Module {
+  pub path: String!
+
+  new(path: String!) {
+    self.path = path
+    self
+  }
+
+  pub directories: Directories! {
+    Directories(modulePath: path, paths: [path + "/auth"])
+  }
+}
+
+type Directories @collection {
+  pub paths: [String!]! @keys
+  let modulePath: String!
+
+  new(modulePath: String!, paths: [String!]!) {
+    self.modulePath = modulePath
+    self.paths = paths
+    self
+  }
+
+  pub directory(path: String!): Directory! @get {
+    Directory(modulePath: modulePath, path: path)
+  }
+}
+
+type Directory {
+  let modulePath: String!
+  pub path: String!
+
+  new(modulePath: String!, path: String!) {
+    self.modulePath = modulePath
+    self.path = path
+    self
+  }
+
+  pub tests: Tests! {
+    Tests(modulePath: modulePath, directoryPath: path, names: ["TestAuth"])
+  }
+}
+
+type Tests @collection {
+  pub names: [String!]! @keys
+  let modulePath: String!
+  let directoryPath: String!
+
+  new(modulePath: String!, directoryPath: String!, names: [String!]!) {
+    self.modulePath = modulePath
+    self.directoryPath = directoryPath
+    self.names = names
+    self
+  }
+
+  pub test(name: String!): Test! @get {
+    Test(name: name)
+  }
+}
+
+type Test {
+  pub name: String!
+
+  new(name: String!) {
+    self.name = name
+    self
+  }
+
+  pub execute: Void @check {
+    null
+  }
+}
+`))
+
+		out, err := nested.With(daggerQuery(`{
+			currentWorkspace {
+				artifacts {
+					dimensions { name }
+					filterCoordinates(dimension: "go-test", values: ["TestAuth"]) {
+						items { coordinates coordinateDimensions }
+						plan(verb: CHECK) {
+							nodes {
+								functionPath
+								target { items { coordinates coordinateDimensions } }
+							}
+						}
+					}
+				}
+			}
+		}`)).Stdout(ctx)
+		require.NoError(t, err)
+		require.JSONEq(t, `{
+			"currentWorkspace": {
+				"artifacts": {
+					"dimensions": [
+						{"name": "type"},
+						{"name": "go-module"},
+						{"name": "go-directory"},
+						{"name": "go-test"}
+					],
+					"filterCoordinates": {
+						"items": [{
+							"coordinates": ["go-test", "api", "api/auth", "TestAuth"],
+							"coordinateDimensions": ["type", "go-module", "go-directory", "go-test"]
+						}],
+						"plan": {"nodes": [{
+							"functionPath": ["execute"],
+							"target": {"items": [{
+								"coordinates": ["go-test", "api", "api/auth", "TestAuth"],
+								"coordinateDimensions": ["type", "go-module", "go-directory", "go-test"]
+							}]}
+						}]}
+					}
+				}
+			}
+		}`, out)
+
+		out, err = nested.With(daggerExec("check", "-l")).Stdout(ctx)
+		require.NoError(t, err)
+		require.Equal(t, `# Empty target runs everything. Otherwise use:
+--go-module=api --go-directory=api/auth --go-test=TestAuth execute
+`, out)
 	})
 
 	t.Run("identical keys in separate occurrences", func(ctx context.Context, t *testctx.T) {
@@ -266,6 +436,10 @@ type Tests @collection {
 			}
 		}
 		require.Equal(t, 2, batched)
+
+		out, err = duplicateOccurrences.With(daggerExec("check", "-l")).Stdout(ctx)
+		require.NoError(t, err)
+		require.Equal(t, "# Empty target runs everything. Otherwise use:\n", out)
 	})
 
 	t.Run("cli filters and aliases", func(ctx context.Context, t *testctx.T) {
@@ -284,7 +458,7 @@ type Tests @collection {
 			}
 			require.NoError(t, err)
 		}
-		require.Equal(t, "integration\nunit\n", out)
+		require.Equal(t, "go:engine\nintegration\nunit\n", out)
 
 		out, err = mod.With(
 			daggerExec("list", "go-test", "--go-test=unit"),
@@ -296,7 +470,7 @@ type Tests @collection {
 			daggerExec("list", "go-test", "--go-tests"),
 		).Stdout(ctx)
 		require.NoError(t, err)
-		require.Equal(t, "integration\nunit\n", out)
+		require.Equal(t, "go:engine\nintegration\nunit\n", out)
 
 		listCheck := mod.With(daggerExec("list", "go-test", "--check"))
 		out, err = listCheck.Stdout(ctx)
@@ -313,7 +487,7 @@ type Tests @collection {
 			}
 			require.NoError(t, err)
 		}
-		require.Equal(t, "integration\nunit\n", out)
+		require.Equal(t, "go:engine\nintegration\nunit\n", out)
 
 		out, err = mod.With(
 			daggerExec("check", "-l", "--go-test=unit"),
@@ -326,8 +500,14 @@ type Tests @collection {
 			daggerExec("check", "-l", "--go-tests"),
 		).Stdout(ctx)
 		require.NoError(t, err)
+		require.Contains(t, out, "go:engine")
 		require.Contains(t, out, "integration")
 		require.Contains(t, out, "unit")
+
+		out, err = mod.With(
+			daggerExec("check", "go-test:run"),
+		).CombinedOutput(ctx)
+		require.NoError(t, err, out)
 
 		_, err = mod.With(
 			daggerExec("list", "go-test", "--go-tests=false"),

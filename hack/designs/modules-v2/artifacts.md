@@ -61,6 +61,13 @@ module go {
 }
 
 type Go {
+  pub engine: GoTest!
+
+  new() {
+    self.engine = GoTest(name: "engine")
+    self
+  }
+
   pub lint: Void! @check
 
   pub tests: GoTests! {
@@ -83,7 +90,8 @@ type GoTest {
 ```
 
 Assume the collection currently holds keys `TestFoo` and `TestBar`. This yields
-three artifacts: the top-level `go` object, and one item per test.
+four artifacts: the top-level `go` object, the static `engine` field, and one
+item per test.
 
 ## Model
 
@@ -98,22 +106,28 @@ An **artifact** is a stably named, CLI-selectable thing with its own lifecycle:
 it has a coordinate the user can spell, that coordinate is stable across runs,
 and it is the kind of thing you lint, generate for, ship, or bring up.
 
-Exactly two things are artifacts:
+Exactly three things are artifacts:
 
 1. **Top-level module objects** — the roots a module exposes (usually one,
    sometimes more). In the canonical example, `go`.
-2. **Collection items** — the keyed members of a `@collection` type. In the
+2. **Static object fields** — stored, non-null, object-valued fields on an
+   artifact or its descendants. Each field occurrence is its own artifact. In
+   the canonical example, `Go.engine`.
+3. **Collection items** — the keyed members of a `@collection` type. In the
    canonical example, `TestFoo` and `TestBar`.
 
-Everything else is **structural glue**: nested non-collection objects,
-configuration helpers, internal structure. Glue is not selectable, but it still
-matters for verb reachability and action-path naming (`tests:run`). In the
-canonical example, nothing between `Go` and `GoTest` is glue; add an
-intermediate `type Tests { ... }` and it would be.
+Everything else is **structural glue**: object-valued functions, optional
+fields, configuration helpers, and internal structure. Glue is not selectable,
+but it still matters for verb reachability and action-path naming
+(`tests:run`). Returning an object from a function does not make that result an
+artifact; storing the same object in a non-null field does.
 
-The eligibility rule is graph-shape-derived. Cases it does not cover
-(heterogeneous named substructures like `Release.{sdk,cli,docs}`) are
-[Q6](#open-questions).
+Static artifacts are discovered recursively. A child inherits all applicable
+ancestor coordinates, then sets its own type dimension. This makes filters
+composable across a path such as `E2E.sdksARM.go`: the `SDKDev` occurrence
+narrows one dimension and the nested `TestSuite` occurrence narrows another.
+An artifact type may occur at most once along any such path. Repeated types and
+cycles that would repeat a dimension are rejected at workspace load.
 
 ### Dimensions and coordinates
 
@@ -129,7 +143,8 @@ For the canonical example the root scope is:
 ```console
 dimensions = [type, go-test]
 
-go   top-level object   -> ["go",      null]
+go root                 -> ["go",      null]
+Go.engine field         -> ["go-test", "go:engine"]
 TestFoo item            -> ["go-test", "TestFoo"]
 TestBar item            -> ["go-test", "TestBar"]
 ```
@@ -139,58 +154,65 @@ Top-level rows carry `null` for collection dimensions that do not apply.
 
 ### The `type` dimension
 
-`type` is the one built-in dimension. Every artifact has a non-null `type`,
-derived purely syntactically from the artifact's GraphQL object type name,
-kebab-cased: `Go` → `go`, `SdkRelease` → `sdk-release`, `GoTest` → `go-test`. It
-does not consult the module name, the field name, or user configuration.
+`type` is the one built-in dimension. Every artifact has a non-null `type`.
+Installed object types are already namespaced by the engine's module loading
+rules. The module's main object uses its installed schema name. Other object
+types use their source module name plus their original, pre-installation type
+name, both in CLI casing. Using the original name preserves acronym boundaries
+that may be flattened in an installed GraphQL name:
 
-Collections add further dimensions such as `go-test` or `go-module`. There is no
-synthesized non-collection dimension algebra: a nested object does not become a
-dimension merely by existing.
+```console
+module go, main object Go       -> go
+module e2e, type TestSuite      -> e2e-test-suite
+module e2e, type SDKDev         -> e2e-sdk-dev
+```
 
-Cross-module `type` collisions are [Q1](#open-questions).
+The rule does not consult a field name or user configuration. Multiple modules
+can therefore define the same local type name without colliding, and several
+top-level objects from one module remain distinguishable.
 
-### Selector paths and the `type:field` bridge
+Static fields and collections add further dimensions named by their artifact
+type, such as `go-test` or `go-module`. All occurrences of the same artifact
+type share one dimension, whether they came from a stored field or a collection.
+An object returned only through a function does not become a dimension.
 
-A selector string is `[<type>]:<field>[:<field>…]`: the leading segment is a
-`type` coordinate, each remaining segment a step along the **artifact-relative**
-field/action path, and a `[<key>]` suffix pins a collection member (lowering to
-the same key filter as `--<item-type>=<key>`, not a bespoke `get`). The leading
-`<type>` may be dropped once scope already fixes one artifact — `dagger check
---type=go tests:run` ≡ `check go:tests:run`. Because a top-level object's `type`
-kebab-matches its constructor field (`Go`/`go`), every legacy `<module>:<fn>`
-string re-resolves **unchanged** under this reading: the token that once
-navigated a root field now selects the artifact of that `type`. Collection items
-are ordinary artifacts, so `type:field[:field]` reaches them identically;
-`[<key>]` only refines *which* member.
+### Filters and targets
 
-One grammar backs every consumer of the selection vocabulary — positional
-`check`/`generate`/`up` selectors, `FunctionPattern` ([plans.md](./plans.md)),
-and `from` references in workspace config — so a path learned in one place
-transfers verbatim to the others. Disambiguation is engine-owned: a leading
-segment naming an in-scope `type` is a type filter; otherwise it is the first
-step of a relative path.
+Filters constrain artifact coordinate rows. Every non-`type` dimension becomes
+a repeatable `--<dimension>=<coordinate>` flag. Static field coordinates use
+`<declaring-local-type>:<field>`, so `SDKDev.go` is selected with
+`--e2e-test-suite=sdk-dev:go`. Collection item coordinates use their key; `%`
+and `:` in keys are percent-escaped so a dynamic key cannot collide with a
+static field coordinate.
+
+Targets are positional `TargetPattern` values ([plans.md](./plans.md)). They
+match artifact types, static field occurrences, inherited occurrence lineage,
+and lifecycle action paths. For a static path `E2E.sdksARM.go`, the target
+candidates include `e2e`, `e2e:sdksarm`, `sdk-dev:go`, `e2e-test-suite`, and
+each candidate followed by the action path. A literal artifact target selects
+all actions beneath it.
+
+This separation permits both:
+
+```console
+dagger check --e2e-test-suite=sdk-dev:go verify
+dagger check sdk-dev:go
+```
+
+The first filters every matching `TestSuite` occurrence and then selects only
+`verify`. The second is the compatibility form and selects every lifecycle
+action on every `SDKDev.go` occurrence.
 
 ### Dimension key types
 
-Dimension keys travel as strings. `Artifact.coordinates` is `[String]!`, CLI
-flags pass strings, and `filterCoordinates` takes strings.
-`ArtifactDimension.keyType` is metadata — not transport — so the engine can
-parse, validate, and render values.
+Dimension coordinates travel as strings. `Artifact.coordinates` is `[String]!`,
+CLI flags pass strings, and `filterCoordinates` takes strings. Artifact
+dimensions therefore expose `String` as `ArtifactDimension.keyType`, including
+dimensions shared by static fields and collection items.
 
-This constrains authors:
-
-- Keys must be stringifiable with a canonical round-trip. Strings, integers,
-  booleans, and enums qualify; custom scalars qualify only if they document a
-  total string round-trip.
-- Object types (`Directory`, `Container`, any dagql object) do not qualify: they
-  carry identity beyond a string, and two values that print the same may not be
-  equal.
-- Declaring a non-stringifiable `keyType` is a workspace-load error.
-
-When a key is "string-on-the-wire, typed elsewhere" (a path later lowered to a
-`Directory` argument), the lowering step is out of scope. See
-[Q4](#open-questions).
+Collections retain each key's original scalar or enum value internally. Plan
+lowering uses that typed value when calling `get` or `subset`; the artifact
+coordinate remains the stable string used for filtering and display.
 
 ## Verbs
 
@@ -241,15 +263,15 @@ argument values there is no general way to supply.
 
 For an artifact of type `T`, starting at `T`:
 
-1. Walk recursively through object-valued fields and zero-arg object-valued
-   functions (using their declared return type as the next node).
+1. Walk recursively through structural glue: object-valued functions and
+   object-valued fields that are not static artifacts.
 2. At each type, direct verb-annotated functions are reachable handlers.
-3. Stop at: the next artifact boundary, members that require arguments,
-   non-object fields, and cross-artifact references.
+3. Stop at: a static artifact field, collection item, top-level artifact
+   reference, member that requires arguments, or non-object field.
 
-So a top-level object rolls up handlers from its nested glue, a collection item
-rolls up handlers from glue inside that item, and a parent artifact does not
-absorb handlers from its child collection items.
+So a top-level object rolls up handlers from nested function-returned glue, a
+static artifact or collection item rolls up handlers from glue inside itself,
+and a parent artifact does not absorb handlers from child artifacts.
 
 `Artifacts.plan(verb: V, ...)` considers only artifacts where
 `hasVerb(artifact, V)` holds.
@@ -312,6 +334,7 @@ js
 go-test
 
 $ dagger list go-test
+go:engine
 TestFoo
 TestBar
 ```
@@ -336,8 +359,8 @@ If a more specific dimension already fixes the artifact kind, `--type` is
 redundant. These are equivalent:
 
 ```console
-$ dagger check --type=go-test --go-test=TestFoo run
-$ dagger check --go-test=TestFoo run
+dagger check --type=go-test --go-test=TestFoo run
+dagger check --go-test=TestFoo run
 ```
 
 ## Schema
@@ -394,6 +417,12 @@ type ArtifactDimension {
   rendering. It does not enumerate the current in-scope values.
   """
   keyType: TypeDef!
+
+  """
+  Collection type names accepted by the CLI as presence aliases for this
+  dimension. Empty for dimensions that do not originate from collections.
+  """
+  collectionTypes: [String!]!
 }
 
 enum Verb {
@@ -411,12 +440,24 @@ type Artifact {
   """
   coordinates: [String]!
 
+  """
+  Coordinate dimensions in artifact ancestry order. Includes `type` first,
+  followed by each non-null coordinate dimension from outermost to innermost.
+  """
+  coordinateDimensions: [String!]!
+
   """Convenience lookup for one coordinate by dimension name."""
   coordinate(name: String!): String
 
   """
-  The Artifacts scope that produced this row. Coordinates are unique only
-  within this scope.
+  Whether this artifact has a coordinate for the named dimension. This
+  distinguishes an inapplicable null coordinate from a legal empty-string key.
+  """
+  hasCoordinate(name: String!): Boolean!
+
+  """
+  The Artifacts scope that produced this row. Coordinates define a selector
+  equivalence class and may be shared by multiple occurrences in this scope.
   """
   scope: Artifacts!
 }
@@ -430,8 +471,8 @@ Coordinate filters compose the obvious way:
 - different dimensions are **AND**
 
 ```console
-$ dagger check --type=go --type=js lint      # type is go OR js
-$ dagger check --type=go-test --go-test=TestFoo run   # type=go-test AND go-test=TestFoo
+dagger check --type=go --type=js lint      # type is go OR js
+dagger check --type=go-test --go-test=TestFoo run   # type=go-test AND go-test=TestFoo
 ```
 
 Presence filtering keeps rows where a coordinate is non-null; coordinate
@@ -577,8 +618,8 @@ Expected:
 ```console
 dimensions: { type }
 rows:
-  { type=sdk-release }
-  { type=cli-release }
+  { type=release-sdk-release }
+  { type=release-cli-release }
 ```
 
 Proves several top-level objects in one module are distinguishable without a
@@ -614,6 +655,42 @@ rows:
 ```
 
 No extra `tests` row and no extra dimension.
+
+#### Static fields add rows and inherit coordinates
+
+```dang
+module e2e {
+  pub e2e: E2E! {
+    E2E()
+  }
+}
+
+type E2E {
+  pub sdksArm: SDKDev!
+}
+
+type SDKDev {
+  pub go: TestSuite!
+}
+
+type TestSuite {
+  pub verify: Void! @check
+}
+```
+
+Expected:
+
+```console
+dimensions: { type, e2e-sdk-dev, e2e-test-suite }
+rows:
+  { type=e2e,            e2e-sdk-dev=null,         e2e-test-suite=null }
+  { type=e2e-sdk-dev,    e2e-sdk-dev=e2e:sdks-arm, e2e-test-suite=null }
+  { type=e2e-test-suite, e2e-sdk-dev=e2e:sdks-arm, e2e-test-suite=sdk-dev:go }
+```
+
+The `TestSuite` row is selectable by either coordinate filter and by inherited
+targets such as `e2e`, `e2e:sdks-arm`, or `sdk-dev:go`. Replacing either stored
+field with an object-returning function makes it structural glue instead.
 
 #### Collection items add rows and dimensions
 
@@ -697,15 +774,6 @@ dimensions.
 
 ## Open Questions
 
-### Q1. Cross-module `type` collisions
-
-Two modules each exposing a top-level object of GraphQL type `Release` both
-produce `type=release`. Options: validate workspace-unique at load and error on
-collision; allow collisions and add a `module` dimension; or namespace on
-collision (`mymod/release`). **Recommendation:** workspace-unique by
-construction — simplest, catches it early. (The POC implements this by
-module-namespacing type names.)
-
 ### Q2. Handler arity
 
 The walk stops at members requiring arguments — but is a verb-annotated handler
@@ -726,36 +794,13 @@ This is missing infrastructure, and probably belongs in
 carries enough to lower or a separate hook is needed; how path normalization
 works and whether two spellings can be coordinate-equal.
 
-### Q6. Heterogeneous named substructures
-
-The eligibility set does not cover named, heterogeneous, non-collection
-substructures:
-
-```dang
-type Release {
-  pub sdk: SdkRelease!
-  pub cli: CliRelease!
-  pub docs: DocsRelease!
-}
-```
-
-These are not collections (not homogeneous, not keyed) and not top-level
-objects, so today they are glue — there is no way to "ship just the SDK release"
-without restructuring. Every workaround is bad (split modules loses the grouping;
-force-fit a collection needs a homogeneous item type; treat as glue loses the
-child scope). Option: a `@artifact` directive as a third eligibility rule, so
-the rules collapse into "the author marked this as a thing" with three forms:
-top-level (implicit), `@collection` (keyed-homogeneous), `@artifact`
-(heterogeneous-named). **Recommendation:** worth a real design conversation;
-the current restriction may be fine for today's ecosystem but gets painful as
-module shapes grow.
-
 ### Q3 / Q5 / Q7 (minor)
 
-- **Q3 — `Artifact` identity.** An `Artifact` is a `(scope, coordinates)`
-  projection, not a stable cross-scope entity, with consequences for caching,
-  equality, and bookmarking. Recommendation: accept and document the projection
-  model; revisit if a concrete tooling need for cross-scope identity appears.
+- **Q3 — `Artifact` identity.** An `Artifact` is a scope-bound occurrence
+  projection, not a stable cross-scope entity. Its coordinates are selector
+  values rather than identity and may be shared by multiple occurrences.
+  Recommendation: accept and document the projection model; revisit if a
+  concrete tooling need for cross-scope identity appears.
 - **Q5 — `@collection` contract.** Artifacts leans on `@collection` for a stable
   `keys`/`get` shape, unique bounded keys, a fixed item type, and no holes.
   [collections.md](./collections.md) must expose these guarantees by name.
@@ -765,11 +810,20 @@ module shapes grow.
 
 ## Decisions
 
-- Eligible artifacts are exactly top-level module objects and collection items;
-  all other nested objects are structural glue.
-- `type` is the built-in dimension; there is no synthesized non-collection
-  dimension algebra. Dimensions are schema-stable — filtering never drops a
-  dimension. (Rejected: shrinking dimensions on filter — breaks composability.)
+- Eligible artifacts are top-level module objects, stored non-null object fields,
+  and collection items. Object-returning functions remain structural glue.
+- Artifact type and dimension names follow the engine's module namespacing.
+  Non-main object names use source module and original type metadata so acronym
+  boundaries survive installation.
+- Static field and collection item occurrences share dimensions by artifact
+  type. Static coordinates use `<declaring-local-type>:<field>` and inherit
+  ancestor coordinates. Dynamic collection coordinates escape `%` and `:` to
+  avoid colliding with that static domain.
+- Repeated artifact types along one path are rejected because they would repeat
+  a dimension and make ancestor filtering ambiguous.
+- `type` is the built-in dimension. Dimensions are schema-stable — filtering
+  never drops a dimension. (Rejected: shrinking dimensions on filter — breaks
+  composability.)
 - Dimension keys are stringifiable; object types do not qualify. (Rejected:
   object-typed keys with opaque IDs — undefined equality, no round-trip.)
 - The verb set is closed. New verbs are language-level changes. (Rejected:

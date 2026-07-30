@@ -47,7 +47,7 @@ Examples:
 			func(ctx context.Context, engineClient *client.Client) error {
 				dag := engineClient.Dagger()
 				artifacts := dag.CurrentWorkspace().Artifacts()
-				dimensions, err := loadArtifactListDimensions(ctx, dag, artifacts, false)
+				dimensions, err := loadArtifactListDimensions(ctx, artifacts)
 				if err != nil {
 					return err
 				}

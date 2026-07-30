@@ -29,9 +29,11 @@ deduplication — happens inside `Artifacts.plan(...)`. `dagger check` and
 `dagger generate` lower to that API; [Ship](./ship.md) later extends the same
 substrate.
 
-Action discovery walks the structural glue between artifacts (see
-[artifacts.md § Model](./artifacts.md#model)) and produces **artifact-relative**
-function paths such as `["lint"]` or `["tests", "run"]`.
+Action discovery walks structural glue within each artifact boundary (see
+[artifacts.md § Model](./artifacts.md#model)) and produces
+**artifact-relative** function paths such as `["lint"]` or
+`["tests", "run"]`. Stored object fields are artifact boundaries;
+object-returning functions remain glue.
 
 > **Implementers:** each Action is backed by an engine-internal DAGQL call
 > chain. The Action/Plan API is a clean projection over those existing
@@ -45,10 +47,11 @@ function paths such as `["lint"]` or `["tests", "run"]`.
 # engine/DagQL types referenced here, not introduced by this document.
 
 """
-Engine-owned function selector syntax used to match plan entrypoints.
-Examples: `lint`, `tests:run-bun`, `go:*`, `foo:**:lint`.
+Engine-owned target syntax used to match artifact occurrences and lifecycle
+entrypoints.
+Examples: `verify`, `test-suite:verify`, `sdk-dev:go`, `foo:**:lint`.
 """
-scalar FunctionPattern
+scalar TargetPattern
 
 extend type Artifacts {
   """
@@ -59,8 +62,8 @@ extend type Artifacts {
   """
   plan(
     verb: Verb!
-    include: [FunctionPattern!]! = []
-    exclude: [FunctionPattern!]! = []
+    include: [TargetPattern!]! = []
+    exclude: [TargetPattern!]! = []
   ): Plan!
 }
 
@@ -187,15 +190,15 @@ An Action bridges an artifact and a function:
 Verb is part of Action identity: the same function path callable under two verbs
 is two actions. Function paths are **artifact-relative** — the model is
 `(artifact, functionPath)`, not one global grammar. `functionPath` is exact and
-normalized (`[String!]!`); `FunctionPattern` is the separate, engine-owned
+normalized (`[String!]!`); `TargetPattern` is the separate, engine-owned
 selector syntax (globbing, doublestar) used by `plan(...)`.
 
 ### Discovery and naming
 
-Discovery starts at one artifact root and walks recursively through object-valued
-fields and zero-arg object-valued functions. It does not walk through
-argument-requiring members, non-object fields, cross-artifact references, or the
-next artifact boundary — the same rules as verb reachability in
+Discovery starts at one artifact root and walks recursively through structural
+glue. It does not walk through stored object fields, collections,
+argument-requiring members, non-object fields, cross-artifact references, or
+the next top-level artifact boundary — the same rules as verb reachability in
 [artifacts.md](./artifacts.md#reachability). Each verb-annotated function it
 reaches is a reachable action; its `functionPath` is the segment path from the
 root.
@@ -245,37 +248,45 @@ might produce:
 
 ### CLI listing
 
-`dagger check -l` and `dagger generate -l` list compiled plan nodes, not raw
-discovery. For one artifact, plain paths:
-
-```console
-$ dagger check --type=go -l
-lint
-tests:run-bun
-```
-
-For several artifacts, a table with one column per dimension needed to
-distinguish them, plus an `ACTION` column. Constant or all-null dimensions are
-omitted.
+`dagger check -l` and `dagger generate -l` print runnable selector recipes
+derived from compiled plan nodes. Each recipe selects one concrete artifact
+occurrence and one action. It contains every non-null coordinate on that
+artifact, ordered from inherited coordinates to the target artifact's own
+coordinate:
 
 ```console
 $ dagger check -l
-TYPE   ACTION
-go     lint
-go     tests:run-bun
-js     lint
-js     tests:run-bun
-
-$ dagger check --type=go-test -l
-GO TEST   ACTION
-TestFoo   run
-TestBar   run
+# Empty target runs everything. Otherwise use:
+--e2e-test-suite=e2e:engine run
+--e2e-test-suite=e2e:engine verify
+--e2e-sdk-dev=e2e:sdksarm --e2e-test-suite=sdk-dev:go run
+--e2e-sdk-dev=e2e:sdksarm --e2e-test-suite=sdk-dev:go verify
+--e2e-test-suite=fluffy run
+--e2e-test-suite=fluffy verify
 ```
 
-For compatibility, the CLI may accept `<type>:<function-selector>` as shorthand
-for `--type=<type> <function-selector>` (`dagger check go:lint`). This is input
-sugar; positional selectors lower into `plan(...)` as `FunctionPattern`s, and
-the engine — not the CLI — owns selector parsing and matching.
+Every non-comment line is accepted directly after `dagger check` or
+`dagger generate`. The listing intentionally omits aggregate forms such as a
+global `verify`, a partial `--e2e-test-suite=sdk-dev:go`, or a filter-only
+recipe. Those remain valid set-based operations and are documented by command
+help, but they do not identify one artifact/action pair. A complete recipe that
+still matches multiple artifact occurrences is omitted for the same reason.
+Recipes whose coordinates contain NUL are also omitted because NUL cannot be
+represented in a process argument.
+Recipes are ordered by filter count before lexical order so shallower artifact
+actions remain visible before more specific descendants.
+
+Positional targets lower directly into `plan(...)` as `TargetPattern`s. A
+pattern is matched against:
+
+- the action path, such as `verify`
+- the artifact type plus action, such as `e2e-test-suite:verify`
+- every inherited static occurrence target, such as `e2e:sdksarm` or
+  `sdk-dev:go`, with and without the action suffix
+
+A literal occurrence target selects every action beneath it, preserving
+compatibility behavior such as `dagger check sdk-dev:go`. The engine, not the
+CLI, owns target parsing and matching.
 
 ## Plan Construction
 
@@ -286,8 +297,9 @@ the engine — not the CLI — owns selector parsing and matching.
 2. **Plan request.** The caller asks for `scope.plan(verb, include, exclude)`.
 3. **Discovery.** The engine reads `Artifact.actions([verb])` from the selected
    artifacts.
-4. **Entrypoint matching.** `include` then `exclude` are matched against those
-   candidates. Empty `include` means all entrypoints for the verb. Both match
+4. **Target matching.** `include` then `exclude` are matched against each
+   action's path, artifact type, and inherited artifact occurrence targets.
+   Empty `include` means all entrypoints for the verb. Both match
    **entrypoints only** — dependencies are never matched or filtered directly.
 5. **Compilation and batching.** Retained entrypoints become concrete `Action`s.
    Dependencies are added automatically; rollup through glue and batch-vs-item
@@ -331,8 +343,9 @@ workspace.artifacts.filterDimension("go-test").plan(verb: CHECK).run
 
 if `GoTests` exposes `run` on its batch type (see
 [collections.md § Batch shadowing](./collections.md#batch-shadowing)), this
-yields one batched action over `TestFoo`+`TestBar`; without it, one action per
-test.
+yields one batched action over `TestFoo`+`TestBar` and one independent item
+action for the static `Go.engine` artifact. Without batch behavior, every
+selected artifact gets an item action.
 
 ### `generate`
 
@@ -381,8 +394,9 @@ cancel remaining independent actions after the first failure.
 - Artifacts select artifacts; plans select entrypoints. `Artifacts.plan(...)` is
   the single public choke point — exact entrypoint selection is not a separate
   filter API on `Artifacts`.
-- Function paths are artifact-relative and exact. `FunctionPattern` is a
-  distinct engine-owned selector syntax.
+- Function paths are artifact-relative and exact. `TargetPattern` is the
+  distinct engine-owned syntax that matches artifact occurrence lineage and
+  lifecycle action paths.
 - Entrypoint selectors select entrypoints only; dependencies are pulled in
   automatically and never filtered directly.
 - Batching is resolved at compile time; executors never infer it.
@@ -397,6 +411,8 @@ cancel remaining independent actions after the first failure.
   load and reports them through `Plan.loadFailures`; other verbs remain strict.
 - `Plan.run(failFast: true)` cancels remaining CHECK actions after the first
   failure.
-- `dagger check -l` prints plain paths for one artifact and a minimal
-  distinguishing table for several.
+- `dagger check -l` prints one canonical runnable recipe per concrete
+  artifact/action pair, using the artifact's complete coordinate row. Aggregate
+  action targets, partial filters, filter-only recipes, and selectors shared by
+  multiple occurrences remain valid but are left to command help.
 - Replaces `CheckGroup`. Transition path: `CheckGroup` → Execution Plans.

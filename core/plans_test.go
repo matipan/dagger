@@ -14,7 +14,7 @@ import (
 func TestArtifactActionsDiscoverArtifactRelativePaths(t *testing.T) {
 	artifacts := planTestArtifacts(t)
 	items := artifacts.Items()
-	require.Len(t, items, 2)
+	require.Len(t, items, 3)
 
 	goArtifact := items[0]
 	require.Equal(t, "go", mustArtifactCoordinate(t, goArtifact, ArtifactTypeDimension).Value.String())
@@ -23,14 +23,23 @@ func TestArtifactActionsDiscoverArtifactRelativePaths(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{
 		"CHECK:lint",
-		"CHECK:state:validate",
 		"CHECK:tests:unit",
 		"GENERATE:generate",
 	}, actionKeys(actions))
 
 	checks, err := goArtifact.Actions([]Verb{VerbCheck})
 	require.NoError(t, err)
-	require.Equal(t, []string{"CHECK:lint", "CHECK:state:validate", "CHECK:tests:unit"}, actionKeys(checks))
+	require.Equal(t, []string{"CHECK:lint", "CHECK:tests:unit"}, actionKeys(checks))
+
+	stateArtifact := items[1]
+	require.Equal(
+		t,
+		"go-toolchain-state",
+		mustArtifactCoordinate(t, stateArtifact, ArtifactTypeDimension).Value.String(),
+	)
+	stateActions, err := stateArtifact.Actions([]Verb{VerbCheck})
+	require.NoError(t, err)
+	require.Equal(t, []string{"CHECK:validate"}, actionKeys(stateActions))
 }
 
 func TestArtifactActionsStopAtRequiredArgsAndArtifactBoundaries(t *testing.T) {
@@ -72,19 +81,19 @@ func TestArtifactsPlanFiltersAndOrdersActions(t *testing.T) {
 
 	plan, err := artifacts.Plan(
 		VerbCheck,
-		[]FunctionPattern{"**"},
-		[]FunctionPattern{"tests:*"},
+		[]TargetPattern{"**"},
+		[]TargetPattern{"tests:*"},
 	)
 	require.NoError(t, err)
 	require.Equal(t, []string{
 		"go:CHECK:lint",
-		"go:CHECK:state:validate",
+		"go-toolchain-state:CHECK:validate",
 		"sdk-release:CHECK:publish",
 	}, planNodeKeys(t, plan))
 
 	plan, err = artifacts.Plan(
 		VerbCheck,
-		[]FunctionPattern{"tests:**"},
+		[]TargetPattern{"tests:**"},
 		nil,
 	)
 	require.NoError(t, err)
@@ -92,7 +101,7 @@ func TestArtifactsPlanFiltersAndOrdersActions(t *testing.T) {
 
 	plan, err = artifacts.Plan(
 		VerbCheck,
-		[]FunctionPattern{"tests"},
+		[]TargetPattern{"tests"},
 		nil,
 	)
 	require.NoError(t, err)
@@ -100,19 +109,23 @@ func TestArtifactsPlanFiltersAndOrdersActions(t *testing.T) {
 
 	plan, err = artifacts.Plan(
 		VerbCheck,
-		[]FunctionPattern{"go:lint"},
+		[]TargetPattern{"go:lint"},
 		nil,
 	)
 	require.NoError(t, err)
 	require.Equal(t, []string{"go:CHECK:lint"}, planNodeKeys(t, plan))
 
-	plan, err = artifacts.Plan(VerbCheck, []FunctionPattern{"go"}, nil)
+	plan, err = artifacts.Plan(VerbCheck, []TargetPattern{"go"}, nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{
 		"go:CHECK:lint",
-		"go:CHECK:state:validate",
 		"go:CHECK:tests:unit",
+		"go-toolchain-state:CHECK:validate",
 	}, planNodeKeys(t, plan))
+
+	plan, err = artifacts.Plan(VerbCheck, []TargetPattern{"go:state"}, nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{"go-toolchain-state:CHECK:validate"}, planNodeKeys(t, plan))
 }
 
 func TestArtifactsPlanAppliesSourceSpecificExcludes(t *testing.T) {
@@ -122,25 +135,64 @@ func TestArtifactsPlanAppliesSourceSpecificExcludes(t *testing.T) {
 		VerbCheck,
 		nil,
 		nil,
-		map[string][]FunctionPattern{
+		map[string][]TargetPattern{
 			"go-toolchain": {"lint"},
 		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, []string{
-		"go:CHECK:state:validate",
 		"go:CHECK:tests:unit",
+		"go-toolchain-state:CHECK:validate",
 		"sdk-release:CHECK:publish",
 	}, planNodeKeys(t, plan))
 }
 
-func TestFunctionPatternValidation(t *testing.T) {
-	decoded, err := (FunctionPattern("")).DecodeInput("Tests:**")
+func TestTargetPatternValidation(t *testing.T) {
+	decoded, err := (TargetPattern("")).DecodeInput("Tests:**")
 	require.NoError(t, err)
-	require.Equal(t, FunctionPattern("Tests:**"), decoded)
+	require.Equal(t, TargetPattern("Tests:**"), decoded)
 
-	_, err = (FunctionPattern("")).DecodeInput("[")
-	require.ErrorContains(t, err, `invalid function pattern "["`)
+	_, err = (TargetPattern("")).DecodeInput("[")
+	require.ErrorContains(t, err, `invalid target pattern "["`)
+
+	action := &Action{
+		functionPath: []string{"verify"},
+		target: &Artifacts{
+			dimensions: []*ArtifactDimension{{
+				Name:    ArtifactTypeDimension,
+				KeyType: &TypeDef{Kind: TypeDefKindString},
+			}},
+			rows: []*artifactRow{{
+				coordinates: []dagql.Nullable[dagql.String]{
+					dagql.NonNull(dagql.String("e2e-test-suite")),
+				},
+			}},
+		},
+	}
+	require.True(t, matchesTargetPatterns(
+		action,
+		[]TargetPattern{"e2e-test-suite:verify"},
+		false,
+	))
+	require.True(t, matchesTargetPatterns(
+		action,
+		[]TargetPattern{"e2e-test-suite"},
+		false,
+	))
+}
+
+func TestStaticArtifactGeneratorTarget(t *testing.T) {
+	plan, err := planTestArtifacts(t).Plan(
+		VerbGenerate,
+		[]TargetPattern{"go:state"},
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t,
+		[]string{"go-toolchain-state:GENERATE:sync"},
+		planNodeKeys(t, plan),
+	)
 }
 
 func TestPlanRunGraphExecutesSharedDependenciesOnce(t *testing.T) {
@@ -276,6 +328,63 @@ func TestCollectionPlanBatchesShadowedActions(t *testing.T) {
 	}
 }
 
+func TestCollectionPlanTargetsBatchedActionsByType(t *testing.T) {
+	artifacts := collectionPlanTestArtifacts(t)
+
+	plan, err := artifacts.Plan(
+		VerbCheck,
+		[]TargetPattern{"go-test:run"},
+		nil,
+	)
+	require.NoError(t, err)
+	require.Len(t, plan.nodes, 1)
+	require.True(t, plan.nodes[0].CollectionBatched())
+	require.Equal(t, "run", plan.nodes[0].displayName())
+	require.Len(t, plan.nodes[0].target.rows, 2)
+}
+
+func TestCollectionPlanDoesNotBatchStaticArtifacts(t *testing.T) {
+	artifacts := collectionPlanTestArtifacts(t)
+	artifacts.rows = append(artifacts.rows, &artifactRow{
+		coordinates: []dagql.Nullable[dagql.String]{
+			dagql.NonNull(dagql.NewString("go-test")),
+			dagql.NonNull(dagql.NewString("go:engine")),
+		},
+		rootField:        "go",
+		rootType:         "GoTest",
+		sourceModuleName: "go",
+		selectorPath: []dagql.Selector{
+			{Field: "go"},
+			{Field: "engine"},
+		},
+		targetPatterns: []string{"go", "go:engine"},
+	})
+
+	plan, err := artifacts.Plan(VerbCheck, nil, nil)
+	require.NoError(t, err)
+	require.Len(t, plan.nodes, 6)
+
+	var staticActions []*Action
+	var batches []*Action
+	for _, node := range plan.nodes {
+		if node.CollectionBatched() {
+			batches = append(batches, node)
+			continue
+		}
+		if node.target.rows[0].coordinates[1].Value.String() == "go:engine" {
+			staticActions = append(staticActions, node)
+		}
+	}
+	require.Equal(t, []string{"CHECK:lint", "CHECK:run"}, actionKeys(staticActions))
+	require.Len(t, batches, 2)
+	for _, batch := range batches {
+		require.Len(t, batch.target.rows, 2)
+		for _, row := range batch.target.rows {
+			require.NotEqual(t, "go:engine", row.coordinates[1].Value.String())
+		}
+	}
+}
+
 func TestCollectionArtifactActionsRemainItemLocal(t *testing.T) {
 	artifacts := collectionPlanTestArtifacts(t)
 
@@ -339,8 +448,7 @@ func collectionPlanTestArtifacts(t *testing.T) *Artifacts {
 			"GoTest":        objectTypeDef(itemType.Self()),
 			"GoTests_Batch": objectTypeDef(batchType.Self()),
 		},
-		typeDefs:  map[string]*TypeDef{},
-		rootTypes: map[string]struct{}{"Go": {}},
+		typeDefs: map[string]*TypeDef{},
 	}
 	for _, key := range []string{"integration", "unit"} {
 		collectionPath := []dagql.Selector{
@@ -377,21 +485,23 @@ func collectionPlanTestArtifacts(t *testing.T) *Artifacts {
 
 func planTestArtifacts(t *testing.T) *Artifacts {
 	t.Helper()
+	goRoot := artifactTestMainObject(t, "Go")
+	sdkReleaseRoot := artifactTestMainObject(t, "SdkRelease")
 	typeDefs := artifactTestTypeDefs(t,
 		&Function{
 			Name:             "go",
 			SourceModuleName: "go-toolchain",
-			ReturnType:       artifactTestObject(t, "Go"),
+			ReturnType:       goRoot,
 		},
 		&Function{
 			Name:             "sdkRelease",
 			SourceModuleName: "release-toolchain",
-			ReturnType:       artifactTestObject(t, "SdkRelease"),
+			ReturnType:       sdkReleaseRoot,
 		},
 	)
 	typeDefs = append(
 		typeDefs,
-		planTestObjectWithFields(t, "Go",
+		planTestMainObjectWithFields(t, "Go",
 			[]*FieldTypeDef{
 				{
 					Name:    "state",
@@ -426,6 +536,7 @@ func planTestArtifacts(t *testing.T) *Artifacts {
 		),
 		planTestObject(t, "State",
 			planTestAction(t, "validate", VerbCheck),
+			planTestAction(t, "sync", VerbGenerate),
 		),
 		planTestObject(t, "Tests",
 			planTestAction(t, "unit", VerbCheck),
@@ -433,14 +544,14 @@ func planTestArtifacts(t *testing.T) *Artifacts {
 		planTestObject(t, "Configured",
 			planTestAction(t, "validate", VerbCheck),
 		),
-		planTestObject(t, "SdkRelease",
+		planTestMainObject(t, "SdkRelease",
 			planTestAction(t, "publish", VerbCheck),
 		),
 	)
-	return NewArtifactsFromTypeDefs(typeDefs)
+	return mustArtifactsFromTypeDefs(t, typeDefs)
 }
 
-func planTestObjectWithFields(
+func planTestMainObjectWithFields(
 	t *testing.T,
 	name string,
 	fields []*FieldTypeDef,
@@ -448,6 +559,7 @@ func planTestObjectWithFields(
 ) dagql.ObjectResult[*TypeDef] {
 	t.Helper()
 	typeDef := planTestObject(t, name, functions...)
+	objectTypeDef(typeDef.Self()).IsMainObject = true
 	fieldResults := make(dagql.ObjectResultArray[*FieldTypeDef], len(fields))
 	for i, field := range fields {
 		fieldResults[i] = newTypeDefDetachedResult(
@@ -458,6 +570,17 @@ func planTestObjectWithFields(
 		)
 	}
 	typeDef.Self().AsObject.Value.Self().Fields = fieldResults
+	return typeDef
+}
+
+func planTestMainObject(
+	t *testing.T,
+	name string,
+	functions ...*Function,
+) dagql.ObjectResult[*TypeDef] {
+	t.Helper()
+	typeDef := planTestObject(t, name, functions...)
+	objectTypeDef(typeDef.Self()).IsMainObject = true
 	return typeDef
 }
 
@@ -477,9 +600,15 @@ func planTestObject(
 			fn,
 		)
 	}
+	sourceModuleName := "go-toolchain"
+	if name == "SdkRelease" {
+		sourceModuleName = "release-toolchain"
+	}
 	object := newTypeDefDetachedResult(t, dag, "plan-object-"+name, &ObjectTypeDef{
-		Name:      name,
-		Functions: functionResults,
+		Name:             name,
+		OriginalName:     name,
+		SourceModuleName: sourceModuleName,
+		Functions:        functionResults,
 	})
 	return newTypeDefDetachedResult(t, dag, "plan-type-"+name, &TypeDef{
 		Kind:     TypeDefKindObject,

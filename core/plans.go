@@ -50,46 +50,47 @@ func (verb Verb) ToLiteral() call.Literal {
 	return Verbs.Literal(verb)
 }
 
-// FunctionPattern is the engine-owned syntax for selecting action paths.
-type FunctionPattern string
+// TargetPattern is the engine-owned syntax for selecting artifact occurrences
+// and lifecycle action paths.
+type TargetPattern string
 
-func (pattern FunctionPattern) TypeName() string {
-	return "FunctionPattern"
+func (pattern TargetPattern) TypeName() string {
+	return "TargetPattern"
 }
 
-func (pattern FunctionPattern) TypeDescription() string {
-	return "A glob pattern matching artifact-relative function paths."
+func (pattern TargetPattern) TypeDescription() string {
+	return "A glob pattern matching artifact fields or lifecycle action paths."
 }
 
-func (pattern FunctionPattern) Type() *ast.Type {
+func (pattern TargetPattern) Type() *ast.Type {
 	return &ast.Type{NamedType: pattern.TypeName(), NonNull: true}
 }
 
-func (pattern FunctionPattern) Decoder() dagql.InputDecoder {
+func (pattern TargetPattern) Decoder() dagql.InputDecoder {
 	return pattern
 }
 
-func (pattern FunctionPattern) ToLiteral() call.Literal {
+func (pattern TargetPattern) ToLiteral() call.Literal {
 	return call.NewLiteralString(string(pattern))
 }
 
-func (FunctionPattern) DecodeInput(value any) (dagql.Input, error) {
+func (TargetPattern) DecodeInput(value any) (dagql.Input, error) {
 	pattern, ok := value.(string)
 	if !ok {
-		return nil, fmt.Errorf("cannot convert %T to FunctionPattern", value)
+		return nil, fmt.Errorf("cannot convert %T to TargetPattern", value)
 	}
-	normalized := normalizeFunctionPattern(pattern)
+	normalized := normalizeTargetPattern(pattern)
 	if _, err := doublestar.PathMatch(normalized, "validate"); err != nil {
-		return nil, fmt.Errorf("invalid function pattern %q: %w", pattern, err)
+		return nil, fmt.Errorf("invalid target pattern %q: %w", pattern, err)
 	}
-	return FunctionPattern(pattern), nil
+	return TargetPattern(pattern), nil
 }
 
-func (pattern FunctionPattern) MarshalJSON() ([]byte, error) {
+func (pattern TargetPattern) MarshalJSON() ([]byte, error) {
 	return json.Marshal(string(pattern))
 }
 
-var _ dagql.ScalarType = FunctionPattern("")
+var _ dagql.ScalarType = TargetPattern("")
 
 // Action is one exact invocation on an artifact target.
 type Action struct {
@@ -286,15 +287,18 @@ func (artifact *Artifact) discoverActions(
 			if field == nil || field.TypeDef.Self() == nil {
 				continue
 			}
-			fieldType := field.TypeDef.Self()
+			fieldType := artifact.scope.fullObjectTypeDef(field.TypeDef.Self())
 			if !fieldType.AsObject.Valid || fieldType.AsObject.Value.Self() == nil {
 				continue
 			}
 			if fieldType.AsCollection.Valid {
 				continue
 			}
+			if isStaticArtifactField(fieldType) {
+				continue
+			}
 			childType := fieldType.AsObject.Value.Self().Name
-			if _, boundary := artifact.scope.rootTypes[childType]; boundary {
+			if _, boundary := artifact.scope.topLevelTypes[childType]; boundary {
 				continue
 			}
 			child, found := artifact.scope.objects[childType]
@@ -342,7 +346,7 @@ func (artifact *Artifact) discoverActions(
 			if fn.IsCheck || fn.IsGenerator || fn.IsUp || fn.ReturnType.Self() == nil {
 				continue
 			}
-			returnType := fn.ReturnType.Self()
+			returnType := artifact.scope.fullObjectTypeDef(fn.ReturnType.Self())
 			if !returnType.AsObject.Valid || returnType.AsObject.Value.Self() == nil {
 				continue
 			}
@@ -350,7 +354,7 @@ func (artifact *Artifact) discoverActions(
 				continue
 			}
 			childType := returnType.AsObject.Value.Self().Name
-			if _, boundary := artifact.scope.rootTypes[childType]; boundary {
+			if _, boundary := artifact.scope.topLevelTypes[childType]; boundary {
 				continue
 			}
 			child, found := artifact.scope.objects[childType]
@@ -463,19 +467,19 @@ func collectionBatchSelectorPath(
 
 func (artifacts *Artifacts) Plan(
 	verb Verb,
-	include []FunctionPattern,
-	exclude []FunctionPattern,
+	include []TargetPattern,
+	exclude []TargetPattern,
 ) (*Plan, error) {
 	return artifacts.PlanWithSourceExcludes(verb, include, exclude, nil)
 }
 
-// PlanWithSourceExcludes compiles a plan while applying action patterns to
+// PlanWithSourceExcludes compiles a plan while applying target patterns to
 // artifacts owned by a particular source module.
 func (artifacts *Artifacts) PlanWithSourceExcludes(
 	verb Verb,
-	include []FunctionPattern,
-	exclude []FunctionPattern,
-	sourceExcludes map[string][]FunctionPattern,
+	include []TargetPattern,
+	exclude []TargetPattern,
+	sourceExcludes map[string][]TargetPattern,
 ) (*Plan, error) {
 	switch verb {
 	case VerbCheck, VerbGenerate, VerbUp:
@@ -484,24 +488,22 @@ func (artifacts *Artifacts) PlanWithSourceExcludes(
 	}
 
 	var nodes []*Action
-	typeCoordinates := artifacts.coordinateValues(ArtifactTypeDimension)
 	for _, artifact := range artifacts.Items() {
 		actions, err := artifact.planActions(verb)
 		if err != nil {
 			return nil, err
 		}
 		for _, action := range actions {
-			if !matchesActionPatterns(action, include, len(include) == 0, typeCoordinates) {
+			if !matchesTargetPatterns(action, include, len(include) == 0) {
 				continue
 			}
-			if matchesActionPatterns(action, exclude, false, typeCoordinates) {
+			if matchesTargetPatterns(action, exclude, false) {
 				continue
 			}
-			if matchesActionPatterns(
+			if matchesTargetPatterns(
 				action,
 				sourceExcludes[action.sourceModuleName],
 				false,
-				nil,
 			) {
 				continue
 			}
@@ -1429,74 +1431,62 @@ func normalizeFunctionPath(path []string) []string {
 	return normalized
 }
 
-func normalizeFunctionPattern(pattern string) string {
+func normalizeTargetPattern(pattern string) string {
 	segments := strings.Split(pattern, ":")
 	for i, segment := range segments {
-		segments[i] = strcase.ToKebab(segment)
+		segments[i] = artifactCLIName(segment)
 	}
 	return strings.Join(segments, "/")
 }
 
-func matchesActionPatterns(
+func matchesTargetPatterns(
 	action *Action,
-	patterns []FunctionPattern,
+	patterns []TargetPattern,
 	emptyMatches bool,
-	typeCoordinates map[string]struct{},
 ) bool {
 	if len(patterns) == 0 {
 		return emptyMatches
 	}
-	path := strings.Join(action.functionPath, "/")
-	actionType := ""
+	actionPath := strings.Join(action.functionPath, "/")
+	candidates := []string{actionPath}
 	if action.target != nil && len(action.target.rows) == 1 {
+		row := action.target.rows[0]
 		if index, err := action.target.dimensionIndex(ArtifactTypeDimension); err == nil {
-			coordinate := action.target.rows[0].coordinates[index]
+			coordinate := row.coordinates[index]
 			if coordinate.Valid {
-				actionType = coordinate.Value.String()
+				actionType := coordinate.Value.String()
+				candidates = append(
+					candidates,
+					actionType,
+					actionType+"/"+actionPath,
+				)
 			}
+		}
+		for _, target := range row.targetPatterns {
+			normalized := normalizeTargetPattern(target)
+			candidates = append(
+				candidates,
+				normalized,
+				normalized+"/"+actionPath,
+			)
 		}
 	}
 	for _, pattern := range patterns {
-		normalized := normalizeFunctionPattern(string(pattern))
-		if normalized == actionType {
-			return true
-		}
-		if separator := strings.IndexByte(normalized, '/'); separator >= 0 {
-			leading := normalized[:separator]
-			if _, isTypeCoordinate := typeCoordinates[leading]; isTypeCoordinate {
-				if leading != actionType {
-					continue
-				}
-				normalized = normalized[separator+1:]
+		normalized := normalizeTargetPattern(string(pattern))
+		for _, candidate := range candidates {
+			matched, err := doublestar.PathMatch(normalized, candidate)
+			if err == nil && matched {
+				return true
 			}
-		}
-		matched, err := doublestar.PathMatch(normalized, path)
-		if err == nil && matched {
-			return true
-		}
-		// Preserve the CLI's path-selection behavior: a literal object path
-		// selects every lifecycle entrypoint beneath it. Patterns containing
-		// glob metacharacters keep ordinary doublestar semantics.
-		if !strings.ContainsAny(normalized, `*?[\`) &&
-			strings.HasPrefix(path, normalized+"/") {
-			return true
+			// A literal object or artifact target selects every lifecycle
+			// entrypoint beneath it.
+			if !strings.ContainsAny(normalized, `*?[\`) &&
+				strings.HasPrefix(candidate, normalized+"/") {
+				return true
+			}
 		}
 	}
 	return false
-}
-
-func (artifacts *Artifacts) coordinateValues(dimension string) map[string]struct{} {
-	index, err := artifacts.dimensionIndex(dimension)
-	if err != nil {
-		return nil
-	}
-	values := make(map[string]struct{}, len(artifacts.rows))
-	for _, row := range artifacts.rows {
-		if row.coordinates[index].Valid {
-			values[row.coordinates[index].Value.String()] = struct{}{}
-		}
-	}
-	return values
 }
 
 func appendPath(path []string, segment string) []string {

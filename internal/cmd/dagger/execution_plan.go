@@ -3,7 +3,10 @@ package daggercmd
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
+	"unicode"
 
 	"dagger.io/dagger"
 	"github.com/juju/ansiterm/tabwriter"
@@ -13,10 +16,12 @@ import (
 )
 
 type executionPlanRow struct {
-	id          dagger.ID
-	coordinates []string
-	action      string
-	after       []dagger.ID
+	id                   dagger.ID
+	coordinates          []string
+	coordinateDimensions []string
+	coordinateValid      []bool
+	action               string
+	after                []dagger.ID
 }
 
 func prepareExecutionPlanCommand(
@@ -122,7 +127,7 @@ func parseExecutionPlanArgs(
 	args []string,
 	artifacts *dagger.Artifacts,
 	dimensions []artifactListDimension,
-) (*dagger.Artifacts, []dagger.FunctionPattern, error) {
+) (*dagger.Artifacts, []dagger.TargetPattern, error) {
 	flags := pflag.NewFlagSet("execution-plan", pflag.ContinueOnError)
 	flags.SetInterspersed(true)
 	flags.SetOutput(stderr)
@@ -135,9 +140,9 @@ func parseExecutionPlanArgs(
 	}
 	artifacts = filterValues.selection(dimensions).apply(artifacts, dimensions)
 	positionals := flags.Args()
-	include := make([]dagger.FunctionPattern, len(positionals))
+	include := make([]dagger.TargetPattern, len(positionals))
 	for i, pattern := range positionals {
-		include[i] = dagger.FunctionPattern(pattern)
+		include[i] = dagger.TargetPattern(pattern)
 	}
 	return artifacts, include, nil
 }
@@ -155,7 +160,7 @@ func printExecutionPlan(
 
 	targets := map[string]struct{}{}
 	for _, row := range rows {
-		targets[strings.Join(row.coordinates, "\x00")] = struct{}{}
+		targets[row.coordinateKey()] = struct{}{}
 	}
 	if len(targets) <= 1 && !showDependencies {
 		for _, row := range rows {
@@ -169,7 +174,11 @@ func printExecutionPlan(
 		values := map[string]struct{}{}
 		for _, row := range rows {
 			if dimension < len(row.coordinates) {
-				values[row.coordinates[dimension]] = struct{}{}
+				value := "\x00"
+				if row.hasCoordinate(dimension) {
+					value = "\x01" + row.coordinates[dimension]
+				}
+				values[value] = struct{}{}
 			}
 		}
 		varying[dimension] = len(values) > 1
@@ -232,6 +241,175 @@ func printExecutionPlan(
 	return tw.Flush()
 }
 
+func printExecutionPlanRecipes(
+	ctx context.Context,
+	cmd *cobra.Command,
+	plan *dagger.Plan,
+) error {
+	dimensions, rows, err := loadExecutionPlanRows(ctx, plan)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "# Empty target runs everything. Otherwise use:")
+	for _, recipe := range executionPlanRecipes(dimensions, rows) {
+		fmt.Fprintln(cmd.OutOrStdout(), recipe)
+	}
+	return nil
+}
+
+func executionPlanRecipes(
+	dimensions []artifactListDimension,
+	rows []executionPlanRow,
+) []string {
+	typeDimension := slices.IndexFunc(dimensions, func(dimension artifactListDimension) bool {
+		return dimension.Name == artifactTypeDimension
+	})
+	dimensionIndexes := make(map[string]int, len(dimensions))
+	for index, dimension := range dimensions {
+		dimensionIndexes[dimension.Name] = index
+	}
+	type recipeCandidate struct {
+		filterCount int
+		occurrences int
+	}
+	recipes := map[string]recipeCandidate{}
+	for _, row := range rows {
+		filterIndexes := make([]int, 0, len(row.coordinateDimensions))
+		seenDimensions := make(map[string]struct{}, len(row.coordinateDimensions))
+		for _, dimensionName := range row.coordinateDimensions {
+			if dimensionName == artifactTypeDimension {
+				continue
+			}
+			index, found := dimensionIndexes[dimensionName]
+			if !found || !row.hasCoordinate(index) {
+				continue
+			}
+			filterIndexes = append(filterIndexes, index)
+			seenDimensions[dimensionName] = struct{}{}
+		}
+
+		complete := true
+		for index, dimension := range dimensions {
+			if dimension.Name == artifactTypeDimension || !row.hasCoordinate(index) {
+				continue
+			}
+			if _, found := seenDimensions[dimension.Name]; !found {
+				complete = false
+				break
+			}
+		}
+		if !complete {
+			continue
+		}
+
+		if len(filterIndexes) == 0 &&
+			typeDimension >= 0 &&
+			typeDimension < len(row.coordinates) &&
+			row.hasCoordinate(typeDimension) {
+			filterIndexes = append(filterIndexes, typeDimension)
+		}
+
+		filters := make([]string, 0, len(filterIndexes))
+		representable := true
+		for _, index := range filterIndexes {
+			filter, ok := artifactFilterRecipe(
+				dimensions[index].Name,
+				row.coordinates[index],
+			)
+			if !ok {
+				representable = false
+				break
+			}
+			filters = append(filters, filter)
+		}
+		if !representable || len(filters) == 0 {
+			continue
+		}
+		recipe := strings.Join(append(filters, row.action), " ")
+		candidate := recipes[recipe]
+		candidate.filterCount = len(filters)
+		candidate.occurrences++
+		recipes[recipe] = candidate
+	}
+
+	type uniqueRecipe struct {
+		value       string
+		filterCount int
+	}
+	unique := make([]uniqueRecipe, 0, len(recipes))
+	for recipe, candidate := range recipes {
+		if candidate.occurrences == 1 {
+			unique = append(unique, uniqueRecipe{recipe, candidate.filterCount})
+		}
+	}
+	sort.Slice(unique, func(i, j int) bool {
+		if unique[i].filterCount != unique[j].filterCount {
+			return unique[i].filterCount < unique[j].filterCount
+		}
+		return unique[i].value < unique[j].value
+	})
+	sorted := make([]string, len(unique))
+	for index, recipe := range unique {
+		sorted[index] = recipe.value
+	}
+	return sorted
+}
+
+func artifactFilterRecipe(dimension, coordinate string) (string, bool) {
+	if strings.IndexByte(coordinate, 0) >= 0 {
+		return "", false
+	}
+	return "--" + dimension + "=" + shellRecipeArgument(coordinate), true
+}
+
+func shellRecipeArgument(value string) string {
+	if value == "" {
+		return "''"
+	}
+	if strings.IndexFunc(value, func(character rune) bool {
+		return unicode.IsControl(character)
+	}) >= 0 {
+		var quoted strings.Builder
+		quoted.WriteString("$'")
+		for _, character := range value {
+			switch character {
+			case '\\':
+				quoted.WriteString(`\\`)
+			case '\'':
+				quoted.WriteString(`\'`)
+			case '\n':
+				quoted.WriteString(`\n`)
+			case '\r':
+				quoted.WriteString(`\r`)
+			case '\t':
+				quoted.WriteString(`\t`)
+			default:
+				if unicode.IsControl(character) {
+					if character <= 0x7f {
+						fmt.Fprintf(&quoted, `\x%02x`, character)
+					} else {
+						for _, characterByte := range []byte(string(character)) {
+							fmt.Fprintf(&quoted, `\x%02x`, characterByte)
+						}
+					}
+				} else {
+					quoted.WriteRune(character)
+				}
+			}
+		}
+		quoted.WriteByte('\'')
+		return quoted.String()
+	}
+	for _, character := range value {
+		if unicode.IsLetter(character) || unicode.IsDigit(character) ||
+			strings.ContainsRune("-._/:@%+", character) {
+			continue
+		}
+		return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+	}
+	return value
+}
+
 func loadExecutionPlanRows(
 	ctx context.Context,
 	plan *dagger.Plan,
@@ -249,7 +427,7 @@ func loadExecutionPlanRows(
 		}
 		target := nodes[i].Target()
 		if dimensions == nil {
-			dimensions, err = loadArtifactListDimensions(ctx, nil, target, false)
+			dimensions, err = loadArtifactListDimensions(ctx, target)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -288,11 +466,27 @@ func loadExecutionPlanRows(
 			if err != nil {
 				return nil, nil, err
 			}
+			coordinateDimensions, err := target.CoordinateDimensions(ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+			coordinateValid := make([]bool, len(dimensions))
+			for dimensionIndex, dimension := range dimensions {
+				coordinateValid[dimensionIndex], err = target.HasCoordinate(
+					ctx,
+					dimension.Name,
+				)
+				if err != nil {
+					return nil, nil, err
+				}
+			}
 			rows = append(rows, executionPlanRow{
-				id:          id,
-				coordinates: coordinates,
-				action:      strings.Join(functionPath, ":"),
-				after:       after,
+				id:                   id,
+				coordinates:          coordinates,
+				coordinateDimensions: coordinateDimensions,
+				coordinateValid:      coordinateValid,
+				action:               strings.Join(functionPath, ":"),
+				after:                after,
 			})
 		}
 	}
@@ -302,11 +496,33 @@ func loadExecutionPlanRows(
 func executionPlanRowLabel(row executionPlanRow, varying []bool) string {
 	var parts []string
 	for i, coordinate := range row.coordinates {
-		if i < len(varying) && varying[i] && coordinate != "" {
+		if i < len(varying) && varying[i] && row.hasCoordinate(i) {
 			parts = append(parts, coordinate)
 		}
 	}
 	return strings.Join(append(parts, row.action), ":")
+}
+
+func (row executionPlanRow) hasCoordinate(index int) bool {
+	if index < 0 || index >= len(row.coordinates) {
+		return false
+	}
+	if index < len(row.coordinateValid) {
+		return row.coordinateValid[index]
+	}
+	return row.coordinates[index] != ""
+}
+
+func (row executionPlanRow) coordinateKey() string {
+	parts := make([]string, len(row.coordinates))
+	for i, coordinate := range row.coordinates {
+		if row.hasCoordinate(i) {
+			parts[i] = "\x01" + coordinate
+		} else {
+			parts[i] = "\x00"
+		}
+	}
+	return strings.Join(parts, "\x02")
 }
 
 func printExecutionPlanHelp(

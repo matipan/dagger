@@ -66,7 +66,7 @@ Examples:
 			func(ctx context.Context, engineClient *client.Client) error {
 				dag := engineClient.Dagger()
 				artifacts := dag.CurrentWorkspace().Artifacts()
-				dimensions, err := loadArtifactListDimensions(ctx, dag, artifacts, true)
+				dimensions, err := loadArtifactListDimensions(ctx, artifacts)
 				if err != nil {
 					return err
 				}
@@ -98,8 +98,11 @@ Examples:
 						)
 					}
 				}
-				if generateListMode || generatePlanMode {
-					return printExecutionPlan(ctx, cmd, plan, generatePlanMode)
+				if generateListMode {
+					return printExecutionPlanRecipes(ctx, cmd, plan)
+				}
+				if generatePlanMode {
+					return printExecutionPlan(ctx, cmd, plan, true)
 				}
 				return runGeneratePlan(ctx, dag, plan, cmd, disposition)
 			},

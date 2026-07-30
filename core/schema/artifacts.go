@@ -42,13 +42,22 @@ func (s *artifactsSchema) Install(srv *dagql.Server) {
 			Doc("The dimension name used by filters and CLI flags."),
 		dagql.Func("keyType", s.dimensionKeyType).
 			Doc("The type used to parse and validate dimension keys."),
+		dagql.Func("collectionTypes", s.dimensionCollectionTypes).
+			Doc("Collection type names accepted as presence aliases for this dimension."),
 	}.Install(srv)
 
 	dagql.Fields[*core.Artifact]{
 		dagql.Func("coordinates", s.coordinates).
 			Doc("Ordered coordinate row for this artifact."),
+		dagql.Func("coordinateDimensions", s.coordinateDimensions).
+			Doc("Coordinate dimensions in artifact ancestry order."),
 		dagql.Func("coordinate", s.coordinate).
 			Doc("Look up this artifact's coordinate for one dimension.").
+			Args(
+				dagql.Arg("name").Doc("The dimension name."),
+			),
+		dagql.Func("hasCoordinate", s.hasCoordinate).
+			Doc("Whether this artifact has a coordinate for one dimension.").
 			Args(
 				dagql.Arg("name").Doc("The dimension name."),
 			),
@@ -79,7 +88,7 @@ func (s *artifactsSchema) artifacts(
 func materializeArtifacts(
 	ctx context.Context,
 	artifacts *core.Artifacts,
-	include []core.FunctionPattern,
+	include []core.TargetPattern,
 	bestEffort bool,
 ) (*core.Artifacts, []string, error) {
 	if artifacts.IsMaterialized() {
@@ -90,7 +99,11 @@ func materializeArtifacts(
 		return artifacts, nil, nil
 	}
 	if isSyntheticWorkspace(workspace) {
-		materialized, err := artifacts.Materialize(core.NewArtifactsFromTypeDefs(nil))
+		empty, err := core.NewArtifactsFromTypeDefs(nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		materialized, err := artifacts.Materialize(empty)
 		return materialized, nil, err
 	}
 
@@ -215,12 +228,28 @@ func (s *artifactsSchema) dimensionKeyType(
 	return dimension.KeyType, nil
 }
 
+func (s *artifactsSchema) dimensionCollectionTypes(
+	_ context.Context,
+	dimension *core.ArtifactDimension,
+	_ struct{},
+) ([]string, error) {
+	return dimension.CollectionTypes(), nil
+}
+
 func (s *artifactsSchema) coordinates(
 	_ context.Context,
 	artifact *core.Artifact,
 	_ struct{},
 ) ([]dagql.Nullable[dagql.String], error) {
 	return artifact.Coordinates(), nil
+}
+
+func (s *artifactsSchema) coordinateDimensions(
+	_ context.Context,
+	artifact *core.Artifact,
+	_ struct{},
+) ([]string, error) {
+	return artifact.CoordinateDimensions(), nil
 }
 
 func (s *artifactsSchema) coordinate(
@@ -231,6 +260,16 @@ func (s *artifactsSchema) coordinate(
 	},
 ) (dagql.Nullable[dagql.String], error) {
 	return artifact.Coordinate(args.Name)
+}
+
+func (s *artifactsSchema) hasCoordinate(
+	_ context.Context,
+	artifact *core.Artifact,
+	args struct {
+		Name string
+	},
+) (bool, error) {
+	return artifact.HasCoordinate(args.Name)
 }
 
 func (s *artifactsSchema) scope(

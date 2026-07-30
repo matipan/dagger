@@ -81,11 +81,11 @@ type GoTests @collection {
 ```go
 // +collection
 type GoTests struct {
-	Keys []string
+    Keys []string
 }
 
 func (tests *GoTests) Get(name string) *GoTest {
-	return &GoTest{Name: name}
+    return &GoTest{Name: name}
 }
 ```
 
@@ -203,15 +203,23 @@ subset, so `c.subset(keys: ks).batch` sees only `ks`.
 
 A collection occurrence contributes to the [Artifacts](./artifacts.md) model:
 
-- a new selector dimension named by the collection's **item type** (`go-test`)
+- a selector dimension named by the collection's **item type** (`go-test`),
+  shared with static field artifacts of that type
 - selector values from the collection's current keys
 - extra coordinates on rows when that dimension is needed to distinguish them
   (see [artifacts.md § Dimensions and coordinates](./artifacts.md#dimensions-and-coordinates))
 
+Collection keys render into the string coordinate domain. `%` and `:` are
+percent-escaped to keep dynamic keys disjoint from static field coordinates;
+the original typed key is retained internally for `get` and `subset` lowering.
+The dimension's public `keyType` is therefore `String` even when the backing
+collection key is another scalar or enum.
+
 The base dimensions stay valid; collections add selector space rather than a
 parallel targeting model. For the canonical example, the base scope
 `filterCoordinates("type", ["go-test"])` can be narrowed further by
-`filterCoordinates("go-test", ["TestFoo"])`.
+`filterCoordinates("go-test", ["TestFoo"])`. The same filter can select the
+canonical static field with `filterCoordinates("go-test", ["go:engine"])`.
 
 ## Extending Plans
 
@@ -220,7 +228,8 @@ two places:
 
 1. collection selector dimensions lower to `subset(keys: ...)` on matching
    collections
-2. collection `batch` behavior may replace one-item-at-a-time expansion
+2. collection `batch` behavior may replace one-item-at-a-time expansion for
+   collection-origin rows only
 
 For the canonical example:
 
@@ -239,6 +248,9 @@ equivalent to:
 ```text
 go.tests.subset(keys: ["TestFoo", "TestBar"]).batch.run
 ```
+
+Static artifacts that share the item type dimension are not collection members.
+They never join a collection batch; their matching actions remain independent.
 
 ## Checks and Generators
 
@@ -268,16 +280,17 @@ The presence alias is positive-only: `--go-tests` is legal; `--go-tests=true`,
 positive-only without one-off boolean negation.
 
 These aliases are CLI sugar. After parsing, the engine sees only real item
-dimensions. Names are derived mechanically from Dagger's CLI casing rules:
-keyed filters use the item type name, presence aliases use the collection type
-name. Each value gets its own flag instance; comma-separated values are
-forbidden. Repeated `--<item-type>` values are OR within the dimension;
-repeating `--<collection-type>` has no additional effect. Type renames are
-CLI-breaking for both forms.
+dimensions. The engine exposes each dimension's exact accepted presence aliases
+through `ArtifactDimension.collectionTypes`; the CLI does not reconstruct them
+from installed GraphQL names. Keyed filters use the item type dimension name.
+Each value gets its own flag instance; comma-separated values are forbidden.
+Repeated `--<item-type>` values are OR within the dimension; repeating
+`--<collection-type>` has no additional effect. Type renames are CLI-breaking
+for both forms.
 
 ```console
-$ dagger check --go-test=TestFoo --go-test=TestBar --go-module=./myapp/app2
-$ dagger check --go-tests --go-module=./myapp/app2
+dagger check --go-test=TestFoo --go-test=TestBar --go-module=./myapp/app2
+dagger check --go-tests --go-module=./myapp/app2
 ```
 
 These filters are scope-relative constraints, not unique selectors: one filter
@@ -301,9 +314,12 @@ $ dagger list go-test --check \
 (`go-tests`), though command help may show accepted aliases in its flag list.
 Listing applies active filters from other dimensions first, flattens
 parent/child relationships between dimensions, and prints unique values in
-stable order. `dagger check -l` / `generate -l` use the table-capable listing
-from [plans.md](./plans.md#cli-listing); collection dimensions become columns
-when needed to distinguish rows.
+stable order. `dagger check -l` / `generate -l` print the runnable recipes
+defined in [plans.md](./plans.md#cli-listing); collection item filters appear
+in those recipes alongside static artifact filters. If identical collection
+keys from separate occurrences produce the same complete selector and action,
+that non-individual recipe is omitted from `-l` while remaining valid as an
+aggregate command.
 
 ### Batch shadowing
 
@@ -321,11 +337,10 @@ type with a `lint` check alongside its `run`, and let `GoTests.batch` define
 
 ```console
 $ dagger check -l
-GO TEST   ACTION
-TestFoo   lint
-TestFoo   run
-TestBar   lint
-TestBar   run
+--go-module=./myapp/app2 --go-test=TestBar lint
+--go-module=./myapp/app2 --go-test=TestBar run
+--go-module=./myapp/app2 --go-test=TestFoo lint
+--go-module=./myapp/app2 --go-test=TestFoo run
 
 $ dagger check --go-test=TestFoo --go-test=TestBar run
 # runs once via go.tests.batch.run over the filtered subset

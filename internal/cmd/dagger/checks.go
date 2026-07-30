@@ -60,7 +60,7 @@ Examples:
 			func(ctx context.Context, engineClient *client.Client) error {
 				dag := engineClient.Dagger()
 				artifacts := dag.CurrentWorkspace().Artifacts()
-				dimensions, err := loadArtifactListDimensions(ctx, dag, artifacts, false)
+				dimensions, err := loadArtifactListDimensions(ctx, artifacts)
 				if err != nil {
 					return err
 				}
@@ -80,11 +80,14 @@ Examples:
 					dagger.VerbCheck,
 					dagger.ArtifactsPlanOpts{
 						Include: include,
-						Exclude: functionPatterns(checksSkip),
+						Exclude: targetPatterns(checksSkip),
 					},
 				)
-				if checksListMode || checksPlanMode {
-					return printExecutionPlan(ctx, cmd, plan, checksPlanMode)
+				if checksListMode {
+					return printExecutionPlanRecipes(ctx, cmd, plan)
+				}
+				if checksPlanMode {
+					return printExecutionPlan(ctx, cmd, plan, true)
 				}
 				return runCheckPlan(ctx, plan, include)
 			},
@@ -92,10 +95,10 @@ Examples:
 	},
 }
 
-func functionPatterns(patterns []string) []dagger.FunctionPattern {
-	result := make([]dagger.FunctionPattern, len(patterns))
+func targetPatterns(patterns []string) []dagger.TargetPattern {
+	result := make([]dagger.TargetPattern, len(patterns))
 	for i, pattern := range patterns {
-		result[i] = dagger.FunctionPattern(pattern)
+		result[i] = dagger.TargetPattern(pattern)
 	}
 	return result
 }
@@ -103,7 +106,7 @@ func functionPatterns(patterns []string) []dagger.FunctionPattern {
 func runCheckPlan(
 	ctx context.Context,
 	plan *dagger.Plan,
-	include []dagger.FunctionPattern,
+	include []dagger.TargetPattern,
 ) error {
 	ctx, zoomSpan := Tracer().Start(ctx, "checks", telemetry.Passthrough())
 	defer zoomSpan.End()
@@ -123,7 +126,7 @@ func runCheckPlan(
 	return nil
 }
 
-func validateCheckSelection(include []dagger.FunctionPattern, selected int) error {
+func validateCheckSelection(include []dagger.TargetPattern, selected int) error {
 	if len(include) == 0 || selected > 0 {
 		return nil
 	}

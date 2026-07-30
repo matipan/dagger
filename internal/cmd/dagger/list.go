@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"sort"
 	"strings"
 
 	"dagger.io/dagger"
@@ -64,7 +63,7 @@ var listCmd = &cobra.Command{
 			dag := engineClient.Dagger()
 			artifacts := dag.CurrentWorkspace().Artifacts()
 
-			dimensions, err := loadArtifactListDimensions(ctx, dag, artifacts, false)
+			dimensions, err := loadArtifactListDimensions(ctx, artifacts)
 			if err != nil {
 				return err
 			}
@@ -99,21 +98,11 @@ var listCmd = &cobra.Command{
 
 func loadArtifactListDimensions(
 	ctx context.Context,
-	dag *dagger.Client,
 	artifacts *dagger.Artifacts,
-	bestEffort bool,
 ) ([]artifactListDimension, error) {
 	apiDimensions, err := artifacts.Dimensions(ctx)
 	if err != nil {
 		return nil, err
-	}
-
-	aliases := map[string][]string{}
-	if dag != nil {
-		aliases, err = loadCollectionDimensionAliases(ctx, dag)
-		if err != nil && !bestEffort {
-			return nil, err
-		}
 	}
 
 	dimensions := make([]artifactListDimension, 0, len(apiDimensions))
@@ -122,62 +111,16 @@ func loadArtifactListDimensions(
 		if err != nil {
 			return nil, err
 		}
+		aliases, err := apiDimensions[i].CollectionTypes(ctx)
+		if err != nil {
+			return nil, err
+		}
 		dimensions = append(dimensions, artifactListDimension{
 			Name:    name,
-			Aliases: aliases[name],
+			Aliases: aliases,
 		})
 	}
 	return dimensions, nil
-}
-
-func loadCollectionDimensionAliases(
-	ctx context.Context,
-	dag *dagger.Client,
-) (map[string][]string, error) {
-	var result struct {
-		CurrentTypeDefs []struct {
-			AsObject *struct {
-				Name string
-			}
-			AsCollection *struct {
-				ValueType struct {
-					AsObject *struct {
-						Name string
-					}
-				}
-			}
-		}
-	}
-	err := dag.Do(ctx, &dagger.Request{
-		Query: `query ArtifactCollectionAliases {
-			currentTypeDefs(hideCore: true, returnAllTypes: true) {
-				asObject { name }
-				asCollection {
-					valueType { asObject { name } }
-				}
-			}
-		}`,
-		OpName: "ArtifactCollectionAliases",
-	}, &dagger.Response{Data: &result})
-	if err != nil {
-		return nil, err
-	}
-
-	aliases := map[string][]string{}
-	for _, typeDef := range result.CurrentTypeDefs {
-		if typeDef.AsObject == nil ||
-			typeDef.AsCollection == nil ||
-			typeDef.AsCollection.ValueType.AsObject == nil {
-			continue
-		}
-		dimension := cliName(typeDef.AsCollection.ValueType.AsObject.Name)
-		alias := cliName(typeDef.AsObject.Name)
-		if !slices.Contains(aliases[dimension], alias) {
-			aliases[dimension] = append(aliases[dimension], alias)
-			sort.Strings(aliases[dimension])
-		}
-	}
-	return aliases, nil
 }
 
 func parseArtifactListArgs(

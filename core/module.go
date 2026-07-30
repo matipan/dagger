@@ -1075,6 +1075,7 @@ func (*Module) DecodePersistedObject(ctx context.Context, dag *dagql.Server, _ u
 
 func (mod *Module) TypeDefs(ctx context.Context, dag *dagql.Server) (dagql.ObjectResultArray[*TypeDef], error) {
 	projector := newCollectionProjector(ctx, dag, mod)
+	mainObject, _ := mod.MainObject()
 	typeDefs := make(
 		dagql.ObjectResultArray[*TypeDef],
 		0,
@@ -1092,6 +1093,10 @@ func (mod *Module) TypeDefs(ctx context.Context, dag *dagql.Server) (dagql.Objec
 		projected, err := projector.projectTypeDef(def.Self())
 		if err != nil {
 			return nil, err
+		}
+		if projectedObject := objectTypeDef(projected); projectedObject != nil {
+			projectedObject.IsMainObject =
+				mainObject != nil && projectedObject.Name == mainObject.Name
 		}
 		if err := appendProjected("ObjectTypeDef", projected); err != nil {
 			return nil, err

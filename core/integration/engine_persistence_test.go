@@ -592,7 +592,7 @@ head -c 32 /dev/urandom | sha256sum | cut -d' ' -f1 > /work/random.txt
 				Plan(
 					dagger.VerbGenerate,
 					dagger.ArtifactsPlanOpts{
-						Include: []dagger.FunctionPattern{"generate-files"},
+						Include: []dagger.TargetPattern{"generate-files"},
 					},
 				)
 			changesEmpty, err := plan.Changes().IsEmpty(ctx)

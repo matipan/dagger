@@ -58,7 +58,7 @@ func (m *HelloWithGenerators) WorkspaceGeneratorsEmpty(ctx context.Context, ws *
 		Plan(
 			dagger.VerbGenerate,
 			dagger.ArtifactsPlanOpts{
-				Include: []dagger.FunctionPattern{"toolchain-generators:*"},
+				Include: []dagger.TargetPattern{"toolchain-generators:*"},
 			},
 		).
 		Changes()

@@ -370,7 +370,7 @@ type Nested {
 	require.NoError(t, err, out)
 	require.Contains(t, out, "passing")
 	require.Contains(t, out, "nested:passing")
-	require.Contains(t, out, "state:passing")
+	require.NotContains(t, out, "state:passing")
 	require.NotContains(t, out, "configured")
 
 	out, err = mod.With(daggerQuery(`{
@@ -417,26 +417,20 @@ type Nested {
 							"verb": "CHECK",
 							"functionPath": ["nested", "passing"],
 							"collectionBatched": false,
-							"target": {"items": [{"coordinates": ["plans-fixture"]}]},
+							"target": {"items": [{"coordinates": ["plans-fixture", null]}]},
 							"after": []
 						}, {
 							"verb": "CHECK",
 							"functionPath": ["passing"],
 							"collectionBatched": false,
-							"target": {"items": [{"coordinates": ["plans-fixture"]}]},
-							"after": []
-						}, {
-							"verb": "CHECK",
-							"functionPath": ["state", "passing"],
-							"collectionBatched": false,
-							"target": {"items": [{"coordinates": ["plans-fixture"]}]},
+							"target": {"items": [{"coordinates": ["plans-fixture", null]}]},
 							"after": []
 						}],
 						"action": {
 							"verb": "CHECK",
 							"functionPath": ["nested", "passing"],
 							"collectionBatched": false,
-							"target": {"items": [{"coordinates": ["plans-fixture"]}]},
+							"target": {"items": [{"coordinates": ["plans-fixture", null]}]},
 							"after": [],
 							"withAfter": {"after": []},
 							"run": null
@@ -446,7 +440,7 @@ type Nested {
 						"verb": "CHECK",
 						"nodes": [{
 							"functionPath": ["nested", "passing"],
-							"target": {"items": [{"coordinates": ["plans-fixture"]}]}
+							"target": {"items": [{"coordinates": ["plans-fixture", null]}]}
 						}],
 						"run": null
 					}
@@ -454,6 +448,74 @@ type Nested {
 			}
 		}
 		}`, out)
+
+	out, err = mod.With(daggerQuery(`{
+		currentWorkspace {
+			artifacts {
+				filterCoordinates(
+					dimension: "plans-fixture-nested",
+					values: ["plans-fixture:state"],
+				) {
+					items {
+						coordinates
+						actions(verbs: [CHECK]) {
+							functionPath
+						}
+					}
+					plan(verb: CHECK) {
+						nodes {
+							functionPath
+							target { items { coordinates } }
+						}
+					}
+				}
+			}
+		}
+	}`)).Stdout(ctx)
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"currentWorkspace": {
+			"artifacts": {
+				"filterCoordinates": {
+					"items": [{
+						"coordinates": ["plans-fixture-nested", "plans-fixture:state"],
+						"actions": [{"functionPath": ["passing"]}]
+					}],
+					"plan": {
+						"nodes": [{
+							"functionPath": ["passing"],
+							"target": {"items": [{
+								"coordinates": ["plans-fixture-nested", "plans-fixture:state"]
+							}]}
+						}]
+					}
+				}
+			}
+		}
+	}`, out)
+
+	out, err = mod.
+		With(daggerExec("check", "-l")).
+		CombinedOutput(ctx)
+	require.NoError(t, err, out)
+	require.Contains(t, out, "--plans-fixture-nested=plans-fixture:state")
+
+	out, err = mod.
+		With(daggerExec("--progress=report", "check", "plans-fixture:state")).
+		CombinedOutput(ctx)
+	require.NoError(t, err, out)
+	require.Regexp(t, `passing.*OK`, out)
+
+	out, err = mod.
+		With(daggerExec(
+			"--progress=report",
+			"check",
+			"--plans-fixture-nested=plans-fixture:state",
+			"passing",
+		)).
+		CombinedOutput(ctx)
+	require.NoError(t, err, out)
+	require.Regexp(t, `passing.*OK`, out)
 
 	actionIDJSON, err := mod.With(daggerQuery(`{
 		currentWorkspace {

@@ -156,8 +156,17 @@ type Artifact implements Node {
     name: String!
   ): String
 
+  """Coordinate dimensions in artifact ancestry order."""
+  coordinateDimensions: [String!]!
+
   """Ordered coordinate row for this artifact."""
   coordinates: [String]!
+
+  """Whether this artifact has a coordinate for one dimension."""
+  hasCoordinate(
+    """The dimension name."""
+    name: String!
+  ): Boolean!
 
   """A unique identifier for this Artifact."""
   id: ID!
@@ -168,6 +177,9 @@ type Artifact implements Node {
 
 """A filterable axis of the artifact graph."""
 type ArtifactDimension implements Node {
+  """Collection type names accepted as presence aliases for this dimension."""
+  collectionTypes: [String!]!
+
   """A unique identifier for this ArtifactDimension."""
   id: ID!
 
@@ -215,11 +227,11 @@ type Artifacts implements Node {
     """The lifecycle operation to compile."""
     verb: Verb!
 
-    """Only include matching artifact-relative function paths."""
-    include: [FunctionPattern!] = []
+    """Only include matching artifact fields or lifecycle action paths."""
+    include: [TargetPattern!] = []
 
-    """Exclude matching artifact-relative function paths."""
-    exclude: [FunctionPattern!] = []
+    """Exclude matching artifact fields or lifecycle action paths."""
+    exclude: [TargetPattern!] = []
   ): Plan!
 }
 
@@ -3698,9 +3710,6 @@ scalar FunctionCallID
 """A unique identifier for an object."""
 scalar FunctionID
 
-"""A glob pattern matching artifact-relative function paths."""
-scalar FunctionPattern
-
 """The result of running an SDK's codegen."""
 type GeneratedCode implements Node {
   """The directory containing the generated code."""
@@ -5583,6 +5592,9 @@ interface Syncer implements Node {
 
 """A unique identifier for an object."""
 scalar SyncerID
+
+"""A glob pattern matching artifact fields or lifecycle action paths."""
+scalar TargetPattern
 
 """An interactive terminal that clients can connect to."""
 type Terminal implements Node & Syncer {

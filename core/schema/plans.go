@@ -17,15 +17,15 @@ var _ SchemaResolvers = &plansSchema{}
 
 func (s *plansSchema) Install(srv *dagql.Server) {
 	core.Verbs.Install(srv)
-	srv.InstallScalar(core.FunctionPattern(""))
+	srv.InstallScalar(core.TargetPattern(""))
 
 	dagql.Fields[*core.Artifacts]{
 		dagql.Func("plan", s.plan).
 			Doc("Compile matching artifact actions into an execution plan.").
 			Args(
 				dagql.Arg("verb").Doc("The lifecycle operation to compile."),
-				dagql.Arg("include").Doc("Only include matching artifact-relative function paths."),
-				dagql.Arg("exclude").Doc("Exclude matching artifact-relative function paths."),
+				dagql.Arg("include").Doc("Only include matching artifact fields or lifecycle action paths."),
+				dagql.Arg("exclude").Doc("Exclude matching artifact fields or lifecycle action paths."),
 			),
 	}.Install(srv)
 
@@ -89,8 +89,8 @@ func (s *plansSchema) Install(srv *dagql.Server) {
 
 type artifactsPlanArgs struct {
 	Verb    core.Verb
-	Include dagql.ArrayInput[core.FunctionPattern] `default:"[]"`
-	Exclude dagql.ArrayInput[core.FunctionPattern] `default:"[]"`
+	Include dagql.ArrayInput[core.TargetPattern] `default:"[]"`
+	Exclude dagql.ArrayInput[core.TargetPattern] `default:"[]"`
 }
 
 func (s *plansSchema) plan(
@@ -98,7 +98,7 @@ func (s *plansSchema) plan(
 	artifacts *core.Artifacts,
 	args artifactsPlanArgs,
 ) (*core.Plan, error) {
-	include := []core.FunctionPattern(args.Include)
+	include := []core.TargetPattern(args.Include)
 	materialized, loadFailures, err := materializeArtifacts(
 		ctx,
 		artifacts,
@@ -115,7 +115,7 @@ func (s *plansSchema) plan(
 	plan, err := materialized.PlanWithSourceExcludes(
 		args.Verb,
 		include,
-		[]core.FunctionPattern(args.Exclude),
+		[]core.TargetPattern(args.Exclude),
 		sourceExcludes,
 	)
 	if err != nil {
@@ -135,7 +135,7 @@ func (s *plansSchema) plan(
 func planSourceExcludes(
 	ctx context.Context,
 	verb core.Verb,
-) (map[string][]core.FunctionPattern, error) {
+) (map[string][]core.TargetPattern, error) {
 	var workspaceSkips func(workspace.ModuleEntry) []string
 	switch verb {
 	case core.VerbCheck:
@@ -217,12 +217,12 @@ func toolchainIgnorePatterns(
 func decodePlanSourceExcludes(
 	verb core.Verb,
 	patterns map[string][]string,
-) (map[string][]core.FunctionPattern, error) {
-	excludes := make(map[string][]core.FunctionPattern, len(patterns))
+) (map[string][]core.TargetPattern, error) {
+	excludes := make(map[string][]core.TargetPattern, len(patterns))
 	for source, sourcePatterns := range patterns {
-		excludes[source] = make([]core.FunctionPattern, len(sourcePatterns))
+		excludes[source] = make([]core.TargetPattern, len(sourcePatterns))
 		for i, pattern := range sourcePatterns {
-			decoded, err := (core.FunctionPattern("")).DecodeInput(pattern)
+			decoded, err := (core.TargetPattern("")).DecodeInput(pattern)
 			if err != nil {
 				return nil, fmt.Errorf(
 					"invalid ignored %s pattern %q for module %q: %w",
@@ -232,7 +232,7 @@ func decodePlanSourceExcludes(
 					err,
 				)
 			}
-			excludes[source][i] = decoded.(core.FunctionPattern)
+			excludes[source][i] = decoded.(core.TargetPattern)
 		}
 	}
 	return excludes, nil
