@@ -235,15 +235,15 @@ exact `(verb, target, functionPath)`, `target.items` of length 1, and
 ```text
 workspace.artifacts
   .filterCoordinates("type", ["go-test"])
-  .plan(verb: CHECK, include: ["run"])
+  .plan(verb: CHECK, include: ["test"])
   .nodes
 ```
 
 might produce:
 
 ```console
-(CHECK, TestFoo, ["run"], false)
-(CHECK, TestBar, ["run"], false)
+(CHECK, TestFoo, ["test"], false)
+(CHECK, TestBar, ["test"], false)
 ```
 
 ### CLI listing
@@ -332,16 +332,23 @@ The recursive verb. From the current scope, the compiler:
 retained as prerequisites.
 
 If the selected artifacts for a `functionPath` belong to one collection
-occurrence and that collection exposes the same handler on its batch type,
-compile one `collectionBatched = true` action; otherwise compile item-level
-actions. This makes aggregate artifacts useful by default. For the canonical
-example's tests:
+occurrence and that collection exposes the same handler on its batch type, the
+selected cardinality decides which implementation runs:
+
+- one selected item compiles its item-level action
+- two or more selected items compile one `collectionBatched = true` action
+- a batch-only handler remains batched for any non-empty selection because no
+  item implementation exists
+
+Otherwise the compiler emits item-level actions. This makes aggregate artifacts
+efficient without routing an individually targeted artifact through a batch
+implementation. For the canonical example's tests:
 
 ```text
 workspace.artifacts.filterDimension("go-test").plan(verb: CHECK).run
 ```
 
-if `GoTests` exposes `run` on its batch type (see
+if `GoTests` exposes `test` on its batch type (see
 [collections.md § Batch shadowing](./collections.md#batch-shadowing)), this
 yields one batched action over `TestFoo`+`TestBar` and one independent item
 action for the static `Go.engine` artifact. Without batch behavior, every

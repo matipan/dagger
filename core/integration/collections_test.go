@@ -197,6 +197,44 @@ type Tests @collection {
 				}
 			}
 		}`, out)
+
+		out, err = mod.With(daggerQuery(`{
+			currentWorkspace {
+				artifacts {
+					filterCoordinates(dimension: "type", values: ["go-test"]) {
+						filterCoordinates(dimension: "go-test", values: ["unit"]) {
+							plan(verb: CHECK, include: ["run"]) {
+								nodes {
+									functionPath
+									collectionBatched
+									target { items { coordinates } }
+								}
+							}
+						}
+					}
+				}
+			}
+		}`)).Stdout(ctx)
+		require.NoError(t, err)
+		require.JSONEq(t, `{
+			"currentWorkspace": {
+				"artifacts": {
+					"filterCoordinates": {
+						"filterCoordinates": {
+							"plan": {
+								"nodes": [{
+									"functionPath": ["run"],
+									"collectionBatched": false,
+									"target": {"items": [{
+										"coordinates": ["go-test", "unit"]
+									}]}
+								}]
+							}
+						}
+					}
+				}
+			}
+		}`, out)
 	})
 
 	t.Run("nested collection coordinates", func(ctx context.Context, t *testctx.T) {
@@ -435,7 +473,7 @@ type Tests @collection {
 				batched++
 			}
 		}
-		require.Equal(t, 2, batched)
+		require.Zero(t, batched)
 
 		out, err = duplicateOccurrences.With(daggerExec("check", "-l")).Stdout(ctx)
 		require.NoError(t, err)

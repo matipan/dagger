@@ -195,7 +195,7 @@ not the item.
 operations that execute more efficiently over the whole subset than one item at
 a time. The engine identifies the effective `keys` and `get` and re-homes every
 other exposed function under `batch`. For example, a collection of tests may
-expose `runTests`; the engine projects it as `c.batch.runTests`, running one
+expose `test`; the engine projects it as `c.batch.test`, running one
 `go test` process over many selected tests. `batch` operates on the current
 subset, so `c.subset(keys: ks).batch` sees only `ks`.
 
@@ -242,11 +242,11 @@ workspace.artifacts
 
 Here `go.tests` projects to the synthetic `GoTests` collection type, whose
 algebra (`subset`, `batch`) the compiled plan drives directly. Without batch
-behavior the plan has one action per item; with it, one action over the subset,
-equivalent to:
+behavior the plan has one action per item; with two or more selected items it
+has one action over the subset, equivalent to:
 
 ```text
-go.tests.subset(keys: ["TestFoo", "TestBar"]).batch.run
+go.tests.subset(keys: ["TestFoo", "TestBar"]).batch.test
 ```
 
 Static artifacts that share the item type dimension are not collection members.
@@ -326,24 +326,28 @@ aggregate command.
 A collection has one effective check set drawn from item checks (on the item
 type) and batch checks (on the `batch` type):
 
-- If an item check and a batch check share a name, the batch check shadows the
-  item check.
+- If an item check and a batch check share a name, cardinality chooses the
+  implementation: one selected item runs the item check; two or more selected
+  items run the batch check once over that subset.
 - Otherwise the item check remains.
+- A batch-only check runs through `batch` for any non-empty subset.
 
-Execution follows: a shadowing batch check runs once over the current subset; an
-unshadowed item check runs once per item. Extend the canonical `GoTest` item
-type with a `lint` check alongside its `run`, and let `GoTests.batch` define
-`run` but not `lint`:
+An unshadowed item check runs once per item. Extend the canonical `GoTest` item
+type with a `lint` check alongside its `test`, and let `GoTests.batch` define
+`test` but not `lint`:
 
 ```console
 $ dagger check -l
 --go-module=./myapp/app2 --go-test=TestBar lint
---go-module=./myapp/app2 --go-test=TestBar run
+--go-module=./myapp/app2 --go-test=TestBar test
 --go-module=./myapp/app2 --go-test=TestFoo lint
---go-module=./myapp/app2 --go-test=TestFoo run
+--go-module=./myapp/app2 --go-test=TestFoo test
 
-$ dagger check --go-test=TestFoo --go-test=TestBar run
-# runs once via go.tests.batch.run over the filtered subset
+$ dagger check --go-test=TestFoo --go-test=TestBar test
+# runs once via go.tests.batch.test over the filtered subset
+
+$ dagger check --go-test=TestFoo test
+# runs TestFoo.test directly
 
 $ dagger check --go-test=TestFoo --go-test=TestBar lint
 # runs once per filtered item via the item type's lint

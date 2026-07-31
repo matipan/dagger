@@ -528,6 +528,9 @@ func (artifacts *Artifacts) PlanWithSourceExcludes(
 			nodes = append(nodes, action)
 		}
 	}
+	if err := resolveSingletonCollectionBatches(nodes); err != nil {
+		return nil, err
+	}
 
 	sort.SliceStable(nodes, func(i, j int) bool {
 		left := nodes[i].target.rows[0]
@@ -538,6 +541,32 @@ func (artifacts *Artifacts) PlanWithSourceExcludes(
 		return nodes[i].displayName() < nodes[j].displayName()
 	})
 	return &Plan{verb: verb, nodes: nodes}, nil
+}
+
+// Batch candidates have already been merged by collection occurrence. Resolve
+// singleton candidates back to the matching item implementation; batch-only
+// actions remain collection-batched.
+func resolveSingletonCollectionBatches(nodes []*Action) error {
+	for index, batchAction := range nodes {
+		if !batchAction.collectionBatched || len(batchAction.target.rows) != 1 {
+			continue
+		}
+		items := batchAction.target.Items()
+		if len(items) != 1 {
+			continue
+		}
+		itemActions, err := items[0].Actions([]Verb{batchAction.verb})
+		if err != nil {
+			return err
+		}
+		for _, itemAction := range itemActions {
+			if slices.Equal(itemAction.functionPath, batchAction.functionPath) {
+				nodes[index] = itemAction
+				break
+			}
+		}
+	}
+	return nil
 }
 
 func mergeCollectionBatchAction(target, additional *Action) {

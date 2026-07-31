@@ -343,6 +343,50 @@ func TestCollectionPlanTargetsBatchedActionsByType(t *testing.T) {
 	require.Len(t, plan.nodes[0].target.rows, 2)
 }
 
+func TestCollectionPlanUsesItemActionForSingleton(t *testing.T) {
+	artifacts := collectionPlanTestArtifacts(t)
+	artifacts, err := artifacts.FilterCoordinates("go-test", []string{"unit"})
+	require.NoError(t, err)
+
+	plan, err := artifacts.Plan(
+		VerbCheck,
+		[]TargetPattern{"go-test:run"},
+		nil,
+	)
+	require.NoError(t, err)
+	require.Len(t, plan.nodes, 1)
+	require.False(t, plan.nodes[0].CollectionBatched())
+	require.Equal(t, "run", plan.nodes[0].displayName())
+	require.Len(t, plan.nodes[0].target.rows, 1)
+	require.Equal(
+		t,
+		`go.tests.get(key: "unit")`,
+		selectorPathString(plan.nodes[0].selectorPath),
+	)
+}
+
+func TestCollectionPlanKeepsBatchOnlyActionForSingleton(t *testing.T) {
+	artifacts := collectionPlanTestArtifacts(t)
+	artifacts, err := artifacts.FilterCoordinates("go-test", []string{"unit"})
+	require.NoError(t, err)
+
+	plan, err := artifacts.Plan(
+		VerbCheck,
+		[]TargetPattern{"go-test:audit"},
+		nil,
+	)
+	require.NoError(t, err)
+	require.Len(t, plan.nodes, 1)
+	require.True(t, plan.nodes[0].CollectionBatched())
+	require.Equal(t, "audit", plan.nodes[0].displayName())
+	require.Len(t, plan.nodes[0].target.rows, 1)
+	require.Equal(
+		t,
+		`go.tests.subset(keys: ["unit"]).batch`,
+		selectorPathString(plan.nodes[0].selectorPath),
+	)
+}
+
 func TestCollectionPlanDoesNotBatchStaticArtifacts(t *testing.T) {
 	artifacts := collectionPlanTestArtifacts(t)
 	artifacts.rows = append(artifacts.rows, &artifactRow{
