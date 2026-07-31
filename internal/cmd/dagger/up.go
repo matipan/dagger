@@ -68,7 +68,7 @@ Examples:
 					dagger.ArtifactsPlanOpts{Include: include},
 				)
 				if upListMode || upPlanMode {
-					return printExecutionPlan(ctx, cmd, plan, upPlanMode)
+					return printExecutionPlan(ctx, cmd, dag, plan, dimensions, upPlanMode)
 				}
 				return runUpPlan(ctx, plan)
 			},

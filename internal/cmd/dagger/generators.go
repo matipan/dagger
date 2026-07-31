@@ -99,10 +99,10 @@ Examples:
 					}
 				}
 				if generateListMode {
-					return printExecutionPlanRecipes(ctx, cmd, plan)
+					return printExecutionPlanRecipes(ctx, cmd, dag, plan, dimensions)
 				}
 				if generatePlanMode {
-					return printExecutionPlan(ctx, cmd, plan, true)
+					return printExecutionPlan(ctx, cmd, dag, plan, dimensions, true)
 				}
 				return runGeneratePlan(ctx, dag, plan, cmd, disposition)
 			},

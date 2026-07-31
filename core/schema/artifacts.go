@@ -3,6 +3,7 @@ package schema
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/dagger/dagger/core"
 	"github.com/dagger/dagger/dagql"
@@ -20,6 +21,11 @@ func (s *artifactsSchema) Install(srv *dagql.Server) {
 	}.Install(srv)
 
 	dagql.Fields[*core.Artifacts]{
+		dagql.Func("materialize", s.materialize).
+			Doc("Resolve this scope into a stable artifact snapshot.").
+			Args(
+				dagql.Arg("bestEffort").Doc("Keep artifacts from modules that load successfully instead of failing on the first module load error."),
+			),
 		dagql.Func("filterDimension", s.filterDimension).
 			Doc("Keep artifacts with a non-null coordinate for the given dimension.").
 			Args(
@@ -92,7 +98,13 @@ func materializeArtifacts(
 	bestEffort bool,
 ) (*core.Artifacts, []string, error) {
 	if artifacts.IsMaterialized() {
-		return artifacts, nil, nil
+		if !bestEffort && artifacts.WasMaterializedBestEffort() && len(artifacts.LoadFailures()) > 0 {
+			return nil, nil, fmt.Errorf(
+				"artifact snapshot contains module load failures: %s",
+				strings.Join(artifacts.LoadFailures(), "; "),
+			)
+		}
+		return artifacts, artifacts.LoadFailures(), nil
 	}
 	workspace := artifacts.Workspace()
 	if workspace == nil {
@@ -128,7 +140,19 @@ func materializeArtifacts(
 	if err != nil {
 		return nil, nil, err
 	}
+	materialized = materialized.WithMaterializationResult(loadFailures, bestEffort)
 	return materialized, loadFailures, nil
+}
+
+func (s *artifactsSchema) materialize(
+	ctx context.Context,
+	artifacts *core.Artifacts,
+	args struct {
+		BestEffort bool `default:"false"`
+	},
+) (*core.Artifacts, error) {
+	materialized, _, err := materializeArtifacts(ctx, artifacts, nil, args.BestEffort)
+	return materialized, err
 }
 
 func workspaceArtifactsSnapshot(ctx context.Context) (*core.Artifacts, error) {

@@ -60,6 +60,14 @@ Examples:
 			func(ctx context.Context, engineClient *client.Client) error {
 				dag := engineClient.Dagger()
 				artifacts := dag.CurrentWorkspace().Artifacts()
+				materialized := artifacts.Materialize(
+					dagger.ArtifactsMaterializeOpts{BestEffort: needsHelp},
+				)
+				materializedID, err := materialized.ID(ctx)
+				if err != nil {
+					return err
+				}
+				artifacts = dagger.Ref[*dagger.Artifacts](dag, materializedID)
 				dimensions, err := loadArtifactListDimensions(ctx, artifacts)
 				if err != nil {
 					return err
@@ -84,10 +92,10 @@ Examples:
 					},
 				)
 				if checksListMode {
-					return printExecutionPlanRecipes(ctx, cmd, plan)
+					return printExecutionPlanRecipes(ctx, cmd, dag, plan, dimensions)
 				}
 				if checksPlanMode {
-					return printExecutionPlan(ctx, cmd, plan, true)
+					return printExecutionPlan(ctx, cmd, dag, plan, dimensions, true)
 				}
 				return runCheckPlan(ctx, plan, include)
 			},

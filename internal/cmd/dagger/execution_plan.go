@@ -150,10 +150,12 @@ func parseExecutionPlanArgs(
 func printExecutionPlan(
 	ctx context.Context,
 	cmd *cobra.Command,
+	dag *dagger.Client,
 	plan *dagger.Plan,
+	dimensions []artifactListDimension,
 	showDependencies bool,
 ) error {
-	dimensions, rows, err := loadExecutionPlanRows(ctx, plan)
+	rows, err := loadExecutionPlanRows(ctx, dag, plan, dimensions)
 	if err != nil {
 		return err
 	}
@@ -244,9 +246,11 @@ func printExecutionPlan(
 func printExecutionPlanRecipes(
 	ctx context.Context,
 	cmd *cobra.Command,
+	dag *dagger.Client,
 	plan *dagger.Plan,
+	dimensions []artifactListDimension,
 ) error {
-	dimensions, rows, err := loadExecutionPlanRows(ctx, plan)
+	rows, err := loadExecutionPlanRows(ctx, dag, plan, dimensions)
 	if err != nil {
 		return err
 	}
@@ -412,85 +416,94 @@ func shellRecipeArgument(value string) string {
 
 func loadExecutionPlanRows(
 	ctx context.Context,
+	dag *dagger.Client,
 	plan *dagger.Plan,
-) ([]artifactListDimension, []executionPlanRow, error) {
-	nodes, err := plan.Nodes(ctx)
+	dimensions []artifactListDimension,
+) ([]executionPlanRow, error) {
+	planID, err := plan.ID(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	var dimensions []artifactListDimension
+
+	var response struct {
+		Node struct {
+			Nodes []struct {
+				ID                dagger.ID
+				FunctionPath      []string
+				CollectionBatched bool
+				After             []dagger.ID
+				Target            struct {
+					Items []struct {
+						Coordinates          []*string
+						CoordinateDimensions []string
+					}
+				}
+			}
+		}
+	}
+	if err := dag.Do(ctx, &dagger.Request{
+		Query: `query ExecutionPlanRows($plan: ID!) {
+  node(id: $plan) {
+    ... on Plan {
+      nodes {
+        id
+        functionPath
+        collectionBatched
+        after
+        target {
+          items {
+            coordinates
+            coordinateDimensions
+          }
+        }
+      }
+    }
+  }
+}`,
+		Variables: map[string]any{"plan": planID},
+		OpName:    "ExecutionPlanRows",
+	}, &dagger.Response{Data: &response}); err != nil {
+		return nil, err
+	}
+
 	var rows []executionPlanRow
-	for i := range nodes {
-		functionPath, err := nodes[i].FunctionPath(ctx)
-		if err != nil {
-			return nil, nil, err
-		}
-		target := nodes[i].Target()
-		if dimensions == nil {
-			dimensions, err = loadArtifactListDimensions(ctx, target)
-			if err != nil {
-				return nil, nil, err
-			}
-		}
-		targets, err := target.Items(ctx)
-		if err != nil {
-			return nil, nil, err
-		}
-		collectionBatched, err := nodes[i].CollectionBatched(ctx)
-		if err != nil {
-			return nil, nil, err
-		}
-		if len(targets) == 0 {
-			return nil, nil, fmt.Errorf(
+	for _, node := range response.Node.Nodes {
+		if len(node.Target.Items) == 0 {
+			return nil, fmt.Errorf(
 				"action %q has no targets",
-				strings.Join(functionPath, ":"),
+				strings.Join(node.FunctionPath, ":"),
 			)
 		}
-		if !collectionBatched && len(targets) != 1 {
-			return nil, nil, fmt.Errorf(
+		if !node.CollectionBatched && len(node.Target.Items) != 1 {
+			return nil, fmt.Errorf(
 				"unbatched action %q has %d targets",
-				strings.Join(functionPath, ":"),
-				len(targets),
+				strings.Join(node.FunctionPath, ":"),
+				len(node.Target.Items),
 			)
 		}
-		id, err := nodes[i].ID(ctx)
-		if err != nil {
-			return nil, nil, err
-		}
-		after, err := nodes[i].After(ctx)
-		if err != nil {
-			return nil, nil, err
-		}
-		for _, target := range targets {
-			coordinates, err := target.Coordinates(ctx)
-			if err != nil {
-				return nil, nil, err
-			}
-			coordinateDimensions, err := target.CoordinateDimensions(ctx)
-			if err != nil {
-				return nil, nil, err
-			}
+		for _, target := range node.Target.Items {
+			coordinates := make([]string, len(target.Coordinates))
 			coordinateValid := make([]bool, len(dimensions))
-			for dimensionIndex, dimension := range dimensions {
-				coordinateValid[dimensionIndex], err = target.HasCoordinate(
-					ctx,
-					dimension.Name,
-				)
-				if err != nil {
-					return nil, nil, err
+			for index, coordinate := range target.Coordinates {
+				if coordinate == nil {
+					continue
+				}
+				coordinates[index] = *coordinate
+				if index < len(coordinateValid) {
+					coordinateValid[index] = true
 				}
 			}
 			rows = append(rows, executionPlanRow{
-				id:                   id,
+				id:                   node.ID,
 				coordinates:          coordinates,
-				coordinateDimensions: coordinateDimensions,
+				coordinateDimensions: target.CoordinateDimensions,
 				coordinateValid:      coordinateValid,
-				action:               strings.Join(functionPath, ":"),
-				after:                after,
+				action:               strings.Join(node.FunctionPath, ":"),
+				after:                node.After,
 			})
 		}
 	}
-	return dimensions, rows, nil
+	return rows, nil
 }
 
 func executionPlanRowLabel(row executionPlanRow, varying []bool) string {

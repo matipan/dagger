@@ -222,6 +222,14 @@ type Artifacts implements Node {
   """Artifacts matching the current filters."""
   items: [Artifact!]!
 
+  """Resolve this scope into a stable artifact snapshot."""
+  materialize(
+    """
+    Keep artifacts from modules that load successfully instead of failing on the first module load error.
+    """
+    bestEffort: Boolean = false
+  ): Artifacts!
+
   """Compile matching artifact actions into an execution plan."""
   plan(
     """The lifecycle operation to compile."""

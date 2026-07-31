@@ -12,6 +12,7 @@ import (
 	"github.com/dagger/dagger/dagql/call"
 	"github.com/iancoleman/strcase"
 	"github.com/vektah/gqlparser/v2/ast"
+	"golang.org/x/sync/errgroup"
 )
 
 const ArtifactTypeDimension = "type"
@@ -27,6 +28,8 @@ type Artifacts struct {
 	workspaceID   *call.ID
 	filters       []artifactFilter
 	materialized  bool
+	loadFailures  []string
+	bestEffort    bool
 }
 
 type artifactFilter struct {
@@ -278,6 +281,7 @@ func NewArtifacts(
 			srv,
 			row,
 			rootType,
+			nil,
 			row.selectorPath,
 			row.coordinates,
 			nil,
@@ -309,6 +313,8 @@ func (artifacts *Artifacts) Clone() *Artifacts {
 		workspaceID:   artifacts.workspaceID,
 		filters:       make([]artifactFilter, len(artifacts.filters)),
 		materialized:  artifacts.materialized,
+		loadFailures:  slices.Clone(artifacts.loadFailures),
+		bestEffort:    artifacts.bestEffort,
 	}
 	for i, dimension := range artifacts.dimensions {
 		cp.dimensions[i] = dimension.Clone()
@@ -466,6 +472,24 @@ func (artifacts *Artifacts) WorkspaceID() *call.ID {
 
 func (artifacts *Artifacts) IsMaterialized() bool {
 	return artifacts.materialized
+}
+
+func (artifacts *Artifacts) LoadFailures() []string {
+	return slices.Clone(artifacts.loadFailures)
+}
+
+func (artifacts *Artifacts) WasMaterializedBestEffort() bool {
+	return artifacts.bestEffort
+}
+
+func (artifacts *Artifacts) WithMaterializationResult(
+	loadFailures []string,
+	bestEffort bool,
+) *Artifacts {
+	result := artifacts.Clone()
+	result.loadFailures = slices.Clone(loadFailures)
+	result.bestEffort = bestEffort
+	return result
 }
 
 // WorkspaceModuleSelectors returns the narrowest selectors known before the
@@ -922,6 +946,7 @@ func (artifacts *Artifacts) discoverCollectionRows(
 	srv *dagql.Server,
 	root *artifactRow,
 	object *ObjectTypeDef,
+	objectResult dagql.AnyObjectResult,
 	selectorPath []dagql.Selector,
 	coordinates []dagql.Nullable[dagql.String],
 	stack map[string]struct{},
@@ -931,6 +956,25 @@ func (artifacts *Artifacts) discoverCollectionRows(
 	}
 	stack = cloneStringSet(stack)
 	stack[object.Name] = struct{}{}
+	resolvedObject := objectResult
+	resolveObject := func() (dagql.AnyObjectResult, error) {
+		if resolvedObject != nil {
+			return resolvedObject, nil
+		}
+		if err := srv.Select(
+			ctx,
+			srv.Root(),
+			&resolvedObject,
+			selectorPath...,
+		); err != nil {
+			return nil, fmt.Errorf(
+				"resolve artifact object %s: %w",
+				selectorPathString(selectorPath),
+				err,
+			)
+		}
+		return resolvedObject, nil
+	}
 
 	for _, child := range artifactTraversalChildren(object) {
 		childTypeDef := artifacts.fullObjectTypeDef(child.typeDef)
@@ -944,14 +988,36 @@ func (artifacts *Artifacts) discoverCollectionRows(
 		if child.staticField && isStaticArtifactField(childTypeDef) {
 			continue
 		}
+		if !childTypeDef.AsCollection.Valid &&
+			!artifacts.objectHasReachableCollection(childObject, stack) {
+			continue
+		}
 
 		childPath := appendSelector(selectorPath, dagql.Selector{Field: child.field})
+		parentResult, err := resolveObject()
+		if err != nil {
+			return err
+		}
+		var childResult dagql.AnyObjectResult
+		if err := srv.Select(
+			ctx,
+			parentResult,
+			&childResult,
+			dagql.Selector{Field: child.field},
+		); err != nil {
+			return fmt.Errorf(
+				"resolve artifact field %s: %w",
+				selectorPathString(childPath),
+				err,
+			)
+		}
 		if childTypeDef.AsCollection.Valid {
 			if err := artifacts.discoverCollectionOccurrence(
 				ctx,
 				srv,
 				root,
 				childTypeDef,
+				childResult,
 				childPath,
 				coordinates,
 			); err != nil {
@@ -964,6 +1030,7 @@ func (artifacts *Artifacts) discoverCollectionRows(
 			srv,
 			root,
 			childObject,
+			childResult,
 			childPath,
 			coordinates,
 			stack,
@@ -979,6 +1046,7 @@ func (artifacts *Artifacts) discoverCollectionOccurrence(
 	srv *dagql.Server,
 	root *artifactRow,
 	collectionTypeDef *TypeDef,
+	collectionObject dagql.AnyObjectResult,
 	collectionPath []dagql.Selector,
 	parentCoordinates []dagql.Nullable[dagql.String],
 ) error {
@@ -996,14 +1064,6 @@ func (artifacts *Artifacts) discoverCollectionOccurrence(
 		)
 	}
 
-	var collectionObject dagql.AnyObjectResult
-	if err := srv.Select(ctx, srv.Root(), &collectionObject, collectionPath...); err != nil {
-		return fmt.Errorf(
-			"resolve collection occurrence %s: %w",
-			selectorPathString(collectionPath),
-			err,
-		)
-	}
 	var keysResult dagql.AnyResult
 	if err := srv.Select(
 		ctx,
@@ -1033,6 +1093,13 @@ func (artifacts *Artifacts) discoverCollectionOccurrence(
 	}
 	occurrence := selectorPathString(collectionPath)
 	seenKeys := make(map[string]struct{}, keys.Len())
+	type collectionItem struct {
+		key         dagql.Input
+		selector    dagql.Selector
+		path        []dagql.Selector
+		coordinates []dagql.Nullable[dagql.String]
+	}
+	items := make([]collectionItem, 0, keys.Len())
 	for index := 1; index <= keys.Len(); index++ {
 		keyResult, err := keysResult.NthValue(ctx, index)
 		if err != nil {
@@ -1096,66 +1163,137 @@ func (artifacts *Artifacts) discoverCollectionOccurrence(
 		)
 		itemCoordinates[dimensionIndex] = dagql.NonNull(dagql.NewString(coordinate))
 
-		itemPath := appendSelector(collectionPath, dagql.Selector{
+		itemSelector := dagql.Selector{
 			Field: collectionGetFunctionName,
 			Args: []dagql.NamedInput{{
 				Name:  collectionKeyArgName,
 				Value: key,
 			}},
+		}
+		items = append(items, collectionItem{
+			key:         key,
+			selector:    itemSelector,
+			path:        appendSelector(collectionPath, itemSelector),
+			coordinates: itemCoordinates,
 		})
-		itemRow := &artifactRow{
-			coordinates:          itemCoordinates,
-			coordinateDimensions: append(slices.Clone(root.coordinateDimensions), dimension),
-			rootField:            root.rootField,
-			rootType:             itemObject.Name,
-			sourceModuleName:     root.sourceModuleName,
-			selectorPath:         itemPath,
-			targetPatterns:       slices.Clone(root.targetPatterns),
-			collectionPath:       cloneSelectors(collectionPath),
-			collectionKey:        key,
-			collectionKeyType:    collection.KeyType.Clone(),
-			collectionDimension:  dimension,
-			collectionType:       artifactTypeCLIName(objectTypeDef(collectionTypeDef)),
-			collectionOccurrence: occurrence,
-		}
-		if batchObject := objectTypeDef(collection.BatchType); batchObject != nil {
-			itemRow.collectionBatchType = batchObject.Name
-		}
-		artifacts.rows = append(artifacts.rows, itemRow)
+	}
 
-		firstStaticRow := len(artifacts.rows)
-		if err := artifacts.discoverStaticArtifactRows(
-			itemRow,
-			itemObject,
-			itemPath,
-			itemCoordinates,
-			nil,
-		); err != nil {
-			return err
-		}
-		dynamicRows := append(
-			[]*artifactRow{itemRow},
-			artifacts.rows[firstStaticRow:]...,
-		)
-		for _, dynamicRow := range dynamicRows {
-			dynamicObject, ok := artifacts.objects[dynamicRow.rootType]
-			if !ok {
-				continue
+	branches := make([][]*artifactRow, len(items))
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(16)
+	for index, item := range items {
+		group.Go(func() error {
+			branch := *artifacts
+			branch.rows = nil
+			itemRow := &artifactRow{
+				coordinates:          item.coordinates,
+				coordinateDimensions: append(slices.Clone(root.coordinateDimensions), dimension),
+				rootField:            root.rootField,
+				rootType:             itemObject.Name,
+				sourceModuleName:     root.sourceModuleName,
+				selectorPath:         item.path,
+				targetPatterns:       slices.Clone(root.targetPatterns),
+				collectionPath:       cloneSelectors(collectionPath),
+				collectionKey:        item.key,
+				collectionKeyType:    collection.KeyType.Clone(),
+				collectionDimension:  dimension,
+				collectionType:       artifactTypeCLIName(objectTypeDef(collectionTypeDef)),
+				collectionOccurrence: occurrence,
 			}
-			if err := artifacts.discoverCollectionRows(
-				ctx,
-				srv,
-				dynamicRow,
-				dynamicObject,
-				dynamicRow.selectorPath,
-				dynamicRow.coordinates,
+			if batchObject := objectTypeDef(collection.BatchType); batchObject != nil {
+				itemRow.collectionBatchType = batchObject.Name
+			}
+			branch.rows = append(branch.rows, itemRow)
+
+			firstStaticRow := len(branch.rows)
+			if err := branch.discoverStaticArtifactRows(
+				itemRow,
+				itemObject,
+				item.path,
+				item.coordinates,
 				nil,
 			); err != nil {
 				return err
 			}
-		}
+			dynamicRows := append(
+				[]*artifactRow{itemRow},
+				branch.rows[firstStaticRow:]...,
+			)
+			for dynamicIndex, dynamicRow := range dynamicRows {
+				dynamicObject, ok := branch.objects[dynamicRow.rootType]
+				if !ok {
+					continue
+				}
+				var dynamicObjectResult dagql.AnyObjectResult
+				if dynamicIndex == 0 &&
+					branch.objectHasReachableCollection(dynamicObject, nil) {
+					if err := srv.Select(
+						groupCtx,
+						collectionObject,
+						&dynamicObjectResult,
+						item.selector,
+					); err != nil {
+						return fmt.Errorf(
+							"resolve collection item %s: %w",
+							selectorPathString(item.path),
+							err,
+						)
+					}
+				}
+				if err := branch.discoverCollectionRows(
+					groupCtx,
+					srv,
+					dynamicRow,
+					dynamicObject,
+					dynamicObjectResult,
+					dynamicRow.selectorPath,
+					dynamicRow.coordinates,
+					nil,
+				); err != nil {
+					return err
+				}
+			}
+			branches[index] = branch.rows
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return err
+	}
+	for _, rows := range branches {
+		artifacts.rows = append(artifacts.rows, rows...)
 	}
 	return nil
+}
+
+func (artifacts *Artifacts) objectHasReachableCollection(
+	object *ObjectTypeDef,
+	stack map[string]struct{},
+) bool {
+	if _, found := stack[object.Name]; found {
+		return false
+	}
+	stack = cloneStringSet(stack)
+	stack[object.Name] = struct{}{}
+
+	for _, child := range artifactTraversalChildren(object) {
+		childTypeDef := artifacts.fullObjectTypeDef(child.typeDef)
+		childObject := objectTypeDef(childTypeDef)
+		if childObject == nil {
+			continue
+		}
+		if _, boundary := artifacts.topLevelTypes[childObject.Name]; boundary {
+			continue
+		}
+		if child.staticField && isStaticArtifactField(childTypeDef) {
+			continue
+		}
+		if childTypeDef.AsCollection.Valid ||
+			artifacts.objectHasReachableCollection(childObject, stack) {
+			return true
+		}
+	}
+	return false
 }
 
 func artifactCollectionCoordinate(coordinate string) string {

@@ -986,6 +986,27 @@ func (r *Artifacts) Items(ctx context.Context) ([]Artifact, error) {
 	return convert(response), nil
 }
 
+// ArtifactsMaterializeOpts contains options for Artifacts.Materialize
+type ArtifactsMaterializeOpts struct {
+	// Keep artifacts from modules that load successfully instead of failing on the first module load error.
+	BestEffort bool
+}
+
+// Resolve this scope into a stable artifact snapshot.
+func (r *Artifacts) Materialize(opts ...ArtifactsMaterializeOpts) *Artifacts {
+	q := r.query.Select("materialize")
+	for i := len(opts) - 1; i >= 0; i-- {
+		// `bestEffort` optional argument
+		if !querybuilder.IsZeroValue(opts[i].BestEffort) {
+			q = q.Arg("bestEffort", opts[i].BestEffort)
+		}
+	}
+
+	return &Artifacts{
+		query: q,
+	}
+}
+
 // ArtifactsPlanOpts contains options for Artifacts.Plan
 type ArtifactsPlanOpts struct {
 	// Only include matching artifact fields or lifecycle action paths.
