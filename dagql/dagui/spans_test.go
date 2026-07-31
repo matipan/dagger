@@ -7,6 +7,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/dagger/dagger/engine/telemetryattrs"
 	"go.opentelemetry.io/otel/codes"
 	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -15,6 +16,44 @@ import (
 
 	telemetry "github.com/dagger/otel-go"
 )
+
+func TestProcessArtifactActionAttributes(t *testing.T) {
+	var snapshot SpanSnapshot
+	snapshot.ProcessAttribute(telemetryattrs.ArtifactActionIDAttr, "sha256:action")
+	snapshot.ProcessAttribute(telemetryattrs.ArtifactActionVerbAttr, "CHECK")
+	snapshot.ProcessAttribute(telemetryattrs.ArtifactActionFunctionPathAttr, []any{"test"})
+	snapshot.ProcessAttribute(telemetryattrs.ArtifactActionSourceModuleAttr, "go")
+	snapshot.ProcessAttribute(telemetryattrs.ArtifactActionCollectionBatchedAttr, true)
+	snapshot.ProcessAttribute(telemetryattrs.ArtifactActionTargetCountAttr, float64(2))
+	snapshot.ProcessAttribute(telemetryattrs.ArtifactActionTargetDigestAttr, "sha256:target")
+	snapshot.ProcessAttribute(telemetryattrs.ArtifactActionCommonDimensionsAttr, []any{"type", "go-module", "go-directory"})
+	snapshot.ProcessAttribute(telemetryattrs.ArtifactActionCommonCoordinatesAttr, []any{"go-test", "api", "api/auth"})
+	snapshot.ProcessAttribute(telemetryattrs.ArtifactActionVaryingDimensionAttr, "go-test")
+	snapshot.ProcessAttribute(telemetryattrs.ArtifactActionVaryingCoordinatesAttr, []any{"TestAuth", "TestJWT"})
+
+	if snapshot.CheckKey() != "artifact-action:sha256:action" {
+		t.Fatalf("CheckKey() = %q", snapshot.CheckKey())
+	}
+	if snapshot.ArtifactActionName() != "test" {
+		t.Fatalf("ArtifactActionName() = %q", snapshot.ArtifactActionName())
+	}
+	if snapshot.ArtifactActionTargetCount != 2 {
+		t.Fatalf("ArtifactActionTargetCount = %d", snapshot.ArtifactActionTargetCount)
+	}
+	displayArgs, exact := snapshot.ArtifactActionTargetArgs(false)
+	if !exact || !reflect.DeepEqual(displayArgs, []string{"--go-module=api", "--go-directory=api/auth"}) {
+		t.Fatalf("display args = %v, exact = %v", displayArgs, exact)
+	}
+	exactArgs, exact := snapshot.ArtifactActionTargetArgs(true)
+	if !exact || !reflect.DeepEqual(exactArgs, []string{
+		"--go-module=api",
+		"--go-directory=api/auth",
+		"--go-test=TestAuth",
+		"--go-test=TestJWT",
+	}) {
+		t.Fatalf("exact args = %v, exact = %v", exactArgs, exact)
+	}
+}
 
 func newTestLogRecord(traceID trace.TraceID, spanID trace.SpanID, body string, attrs ...otellog.KeyValue) sdklog.Record {
 	r := new(sdklog.Record)

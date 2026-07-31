@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/frioux/shellquote"
 	"github.com/muesli/termenv"
 	"github.com/vito/tuist"
 
@@ -119,18 +120,94 @@ func (fe *frontendPretty) checkStatusLine(out TermOutput, r *renderer, node *dag
 		status = "ERROR"
 	}
 	dur := dagui.FormatDuration(node.Span.Activity.Duration(r.now))
-	return fmt.Sprintf("%s%s %s %s %s",
-		indent,
-		out.String(icon).Foreground(color).String(),
-		node.Name,
+	parts := []string{
+		indent + out.String(icon).Foreground(color).String(),
+		checkDisplayName(node.Span, node.Name),
+	}
+	if target := artifactActionTargetDisplay(node.Span); target != "" {
+		parts = append(parts, target)
+	}
+	if summary := artifactActionTargetSummary(node.Span); summary != "" {
+		parts = append(parts, out.String(summary).Faint().String())
+	}
+	parts = append(parts,
 		out.String(dur).Faint().String(),
 		out.String(status).Foreground(color).String(),
 	)
+	return strings.Join(parts, " ")
 }
 
-// checkNodeForSpan returns the surfaced CheckNode for a span (matched by check
-// name, which SurfacedChecks dedups globally), or nil if the span isn't a
-// surfaced check. Used to find a check row's sub-checks for the inline rollup.
+func checkDisplayName(span *dagui.Span, fallback string) string {
+	if span != nil {
+		if name := span.ArtifactActionName(); name != "" {
+			return name
+		}
+	}
+	return fallback
+}
+
+func artifactActionTargetDisplay(span *dagui.Span) string {
+	if span == nil || span.ArtifactActionID == "" {
+		return ""
+	}
+	args, _ := span.ArtifactActionTargetArgs(false)
+	return quoteArtifactActionArgs(args)
+}
+
+func artifactActionTargetSummary(span *dagui.Span) string {
+	if span == nil || span.ArtifactActionID == "" ||
+		(!span.ArtifactActionCollectionBatched && span.ArtifactActionTargetCount <= 1) {
+		return ""
+	}
+	unit := "artifact"
+	if span.ArtifactActionVaryingDimension != "" {
+		unit = span.ArtifactActionVaryingDimension
+	}
+	if span.ArtifactActionTargetCount != 1 {
+		unit += "s"
+	}
+	return fmt.Sprintf("%d %s", span.ArtifactActionTargetCount, unit)
+}
+
+func artifactActionCheckCommand(span *dagui.Span) string {
+	if span == nil || span.ArtifactActionID == "" {
+		return ""
+	}
+	args, _ := span.ArtifactActionTargetArgs(true)
+	if action := span.ArtifactActionName(); action != "" {
+		args = append(args, action)
+	}
+	quoted := quoteArtifactActionArgs(args)
+	if quoted == "" {
+		return ""
+	}
+	return "dagger check " + quoted
+}
+
+func quoteArtifactActionArgs(args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		if strings.IndexFunc(arg, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z') &&
+				!(r >= 'A' && r <= 'Z') &&
+				!(r >= '0' && r <= '9') &&
+				!strings.ContainsRune("_@%+=:,./-", r)
+		}) == -1 {
+			quoted = append(quoted, arg)
+			continue
+		}
+		value, err := shellquote.Quote([]string{arg})
+		if err != nil {
+			return ""
+		}
+		quoted = append(quoted, value)
+	}
+	return strings.Join(quoted, " ")
+}
+
+// checkNodeForSpan returns the surfaced CheckNode for a span, matched by stable
+// artifact action ID when present and by check name for legacy spans. Used to
+// find a check row's sub-checks for the inline rollup.
 func (fe *frontendPretty) checkNodeForSpan(span *dagui.Span) *dagui.CheckNode {
 	if span == nil || span.CheckName == "" {
 		return nil
@@ -138,7 +215,7 @@ func (fe *frontendPretty) checkNodeForSpan(span *dagui.Span) *dagui.CheckNode {
 	var find func(ns []*dagui.CheckNode) *dagui.CheckNode
 	find = func(ns []*dagui.CheckNode) *dagui.CheckNode {
 		for _, n := range ns {
-			if n.Name == span.CheckName {
+			if n.Key == span.CheckKey() {
 				return n
 			}
 			if hit := find(n.Children); hit != nil {

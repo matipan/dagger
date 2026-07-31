@@ -3,6 +3,32 @@ package telemetryattrs
 const (
 	UIResumeOutputAttr = "dagger.io/ui.resume.output"
 
+	// Artifact action attributes make execution plans first-class in traces.
+	// They are emitted on the revealed span that executes one plan action; the
+	// existing check/generator/service attributes remain alongside them for
+	// compatibility with older consumers.
+	ArtifactActionIDAttr                 = "dagger.io/artifact.action.id"                         // string
+	ArtifactActionVerbAttr               = "dagger.io/artifact.action.verb"                       // string
+	ArtifactActionFunctionPathAttr       = "dagger.io/artifact.action.function_path"              // []string
+	ArtifactActionSourceModuleAttr       = "dagger.io/artifact.action.source_module"              // string
+	ArtifactActionCollectionBatchedAttr  = "dagger.io/artifact.action.collection_batched"         // bool
+	ArtifactActionTargetCountAttr        = "dagger.io/artifact.action.target.count"               // int64
+	ArtifactActionTargetDigestAttr       = "dagger.io/artifact.action.target.digest"              // string
+	ArtifactActionCommonDimensionsAttr   = "dagger.io/artifact.action.target.common_dimensions"   // []string
+	ArtifactActionCommonCoordinatesAttr  = "dagger.io/artifact.action.target.common_coordinates"  // []string
+	ArtifactActionVaryingDimensionAttr   = "dagger.io/artifact.action.target.varying_dimension"   // string
+	ArtifactActionVaryingCoordinatesAttr = "dagger.io/artifact.action.target.varying_coordinates" // []string
+	ArtifactActionTargetsTruncatedAttr   = "dagger.io/artifact.action.target.truncated"           // bool
+
+	// Artifact plan attributes summarize the graph on the Plan operation span.
+	// TargetCount is the sum of action target cardinalities, rather than a count
+	// of unique artifacts, because one artifact may intentionally have multiple
+	// actions in a plan.
+	ArtifactPlanVerbAttr        = "dagger.io/artifact.plan.verb"         // string
+	ArtifactPlanActionCountAttr = "dagger.io/artifact.plan.action_count" // int64
+	ArtifactPlanTargetCountAttr = "dagger.io/artifact.plan.target_count" // int64
+	ArtifactPlanBatchCountAttr  = "dagger.io/artifact.plan.batch_count"  // int64
+
 	// GenerateSkippedAttr marks a span reporting a workspace module that
 	// best-effort `dagger generate` skipped because it could not be loaded. The
 	// TUI collects these into a persisted "SKIPPED MODULES" final-report section

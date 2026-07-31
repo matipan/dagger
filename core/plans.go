@@ -16,8 +16,10 @@ import (
 	"github.com/dagger/dagger/dagql"
 	"github.com/dagger/dagger/dagql/call"
 	"github.com/dagger/dagger/engine"
+	"github.com/dagger/dagger/engine/telemetryattrs"
 	"github.com/dagger/dagger/util/parallel"
 	telemetry "github.com/dagger/otel-go"
+	digest "github.com/opencontainers/go-digest"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -168,15 +170,163 @@ func (action *Action) displayName() string {
 }
 
 func (action *Action) qualifiedName() string {
-	var coordinates []string
-	if action.target != nil && len(action.target.rows) == 1 {
-		for _, coordinate := range action.target.rows[0].coordinates {
-			if coordinate.Valid {
-				coordinates = append(coordinates, coordinate.Value.String())
+	target := action.artifactTargetTelemetry()
+	return strings.Join(append(target.commonCoordinates, action.displayName()), ":")
+}
+
+const maxArtifactTelemetryCoordinates = 128
+
+type artifactTargetTelemetry struct {
+	count              int
+	digest             string
+	commonDimensions   []string
+	commonCoordinates  []string
+	varyingDimension   string
+	varyingCoordinates []string
+	truncated          bool
+}
+
+func (action *Action) artifactTargetTelemetry() artifactTargetTelemetry {
+	target := action.target
+	if target == nil {
+		return artifactTargetTelemetry{digest: digest.FromString("").String()}
+	}
+
+	metadata := artifactTargetTelemetry{count: len(target.rows)}
+	canonicalRows := make([]string, 0, len(target.rows))
+	for _, row := range target.rows {
+		canonicalCoordinates := make([]string, 0, len(row.coordinates))
+		for index, coordinate := range row.coordinates {
+			if !coordinate.Valid || index >= len(target.dimensions) {
+				continue
 			}
+			canonicalCoordinates = append(
+				canonicalCoordinates,
+				target.dimensions[index].Name+"="+coordinate.Value.String(),
+			)
+		}
+		canonicalRows = append(canonicalRows, strings.Join([]string{
+			strings.Join(canonicalCoordinates, "\x00"),
+			selectorPathString(row.selectorPath),
+			row.collectionOccurrence,
+		}, "\x01"))
+	}
+	sort.Strings(canonicalRows)
+	metadata.digest = digest.FromString(strings.Join(canonicalRows, "\x02")).String()
+
+	for dimensionIndex, dimension := range target.dimensions {
+		values := make(map[string]struct{}, len(target.rows))
+		allValid := len(target.rows) > 0
+		for _, row := range target.rows {
+			if dimensionIndex >= len(row.coordinates) || !row.coordinates[dimensionIndex].Valid {
+				allValid = false
+				continue
+			}
+			values[row.coordinates[dimensionIndex].Value.String()] = struct{}{}
+		}
+		if allValid && len(values) == 1 {
+			metadata.commonDimensions = append(metadata.commonDimensions, dimension.Name)
+			for coordinate := range values {
+				metadata.commonCoordinates = append(metadata.commonCoordinates, coordinate)
+			}
+			continue
+		}
+		if metadata.varyingDimension == "" && len(values) > 0 {
+			metadata.varyingDimension = dimension.Name
+			for coordinate := range values {
+				metadata.varyingCoordinates = append(metadata.varyingCoordinates, coordinate)
+			}
+			sort.Strings(metadata.varyingCoordinates)
 		}
 	}
-	return strings.Join(append(coordinates, action.displayName()), ":")
+
+	if len(metadata.varyingCoordinates) > maxArtifactTelemetryCoordinates {
+		metadata.varyingCoordinates = metadata.varyingCoordinates[:maxArtifactTelemetryCoordinates]
+		metadata.truncated = true
+	}
+	return metadata
+}
+
+func (action *Action) telemetryAttributes() []attribute.KeyValue {
+	target := action.artifactTargetTelemetry()
+	actionIdentity, _ := json.Marshal(struct {
+		Verb              Verb
+		FunctionPath      []string
+		SourceModule      string
+		CollectionBatched bool
+		TargetDigest      string
+	}{
+		Verb:              action.verb,
+		FunctionPath:      action.functionPath,
+		SourceModule:      action.sourceModuleName,
+		CollectionBatched: action.collectionBatched,
+		TargetDigest:      target.digest,
+	})
+
+	attrs := []attribute.KeyValue{
+		attribute.String(telemetryattrs.ArtifactActionIDAttr, digest.FromBytes(actionIdentity).String()),
+		attribute.String(telemetryattrs.ArtifactActionVerbAttr, string(action.verb)),
+		attribute.StringSlice(telemetryattrs.ArtifactActionFunctionPathAttr, action.functionPath),
+		attribute.Bool(telemetryattrs.ArtifactActionCollectionBatchedAttr, action.collectionBatched),
+		attribute.Int(telemetryattrs.ArtifactActionTargetCountAttr, target.count),
+		attribute.String(telemetryattrs.ArtifactActionTargetDigestAttr, target.digest),
+	}
+	if action.sourceModuleName != "" {
+		attrs = append(attrs, attribute.String(
+			telemetryattrs.ArtifactActionSourceModuleAttr,
+			action.sourceModuleName,
+		))
+	}
+	if len(target.commonDimensions) > 0 {
+		attrs = append(attrs,
+			attribute.StringSlice(
+				telemetryattrs.ArtifactActionCommonDimensionsAttr,
+				target.commonDimensions,
+			),
+			attribute.StringSlice(
+				telemetryattrs.ArtifactActionCommonCoordinatesAttr,
+				target.commonCoordinates,
+			),
+		)
+	}
+	if target.varyingDimension != "" {
+		attrs = append(attrs,
+			attribute.String(
+				telemetryattrs.ArtifactActionVaryingDimensionAttr,
+				target.varyingDimension,
+			),
+			attribute.StringSlice(
+				telemetryattrs.ArtifactActionVaryingCoordinatesAttr,
+				target.varyingCoordinates,
+			),
+		)
+	}
+	if target.truncated {
+		attrs = append(attrs, attribute.Bool(
+			telemetryattrs.ArtifactActionTargetsTruncatedAttr,
+			true,
+		))
+	}
+	return attrs
+}
+
+func (plan *Plan) recordTelemetry(ctx context.Context) {
+	targetCount := 0
+	batchCount := 0
+	for _, node := range plan.nodes {
+		if node.target != nil {
+			targetCount += len(node.target.rows)
+		}
+		if node.collectionBatched {
+			batchCount++
+		}
+	}
+	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.String(telemetryattrs.ArtifactPlanVerbAttr, string(plan.verb)),
+		attribute.Int(telemetryattrs.ArtifactPlanActionCountAttr, len(plan.nodes)),
+		attribute.Int(telemetryattrs.ArtifactPlanTargetCountAttr, targetCount),
+		attribute.Int(telemetryattrs.ArtifactPlanBatchCountAttr, batchCount),
+	)
 }
 
 // Plan is a finite DAG of artifact actions.
@@ -899,6 +1049,8 @@ func (plan *Plan) runGraph(
 	failFast bool,
 	run func(context.Context, int, *Action) error,
 ) error {
+	plan.recordTelemetry(ctx)
+
 	done := make([]chan struct{}, len(plan.nodes))
 	nodeErrors := make([]error, len(plan.nodes))
 	for i := range done {
@@ -1016,15 +1168,16 @@ func artifactRowsEqual(left, right *artifactRow) bool {
 
 func (action *Action) runCheck(ctx context.Context) (rerr error) {
 	name := action.qualifiedName()
+	attrs := append(action.telemetryAttributes(),
+		attribute.Bool(telemetry.UIRollUpLogsAttr, true),
+		attribute.Bool(telemetry.UIRollUpSpansAttr, true),
+		attribute.String(telemetry.CheckNameAttr, name),
+	)
 	ctx, span := Tracer(ctx).Start(
 		ctx,
 		name,
 		telemetry.Reveal(),
-		trace.WithAttributes(
-			attribute.Bool(telemetry.UIRollUpLogsAttr, true),
-			attribute.Bool(telemetry.UIRollUpSpansAttr, true),
-			attribute.String(telemetry.CheckNameAttr, name),
-		),
+		trace.WithAttributes(attrs...),
 	)
 	defer func() {
 		span.SetAttributes(attribute.Bool(telemetry.CheckPassedAttr, rerr == nil))
@@ -1062,15 +1215,16 @@ func (action *Action) runCheck(ctx context.Context) (rerr error) {
 
 func (action *Action) generateChanges(ctx context.Context) (_ *Changeset, rerr error) {
 	name := action.qualifiedName()
+	attrs := append(action.telemetryAttributes(),
+		attribute.Bool(telemetry.UIRollUpLogsAttr, true),
+		attribute.Bool(telemetry.UIRollUpSpansAttr, true),
+		attribute.String(telemetry.GeneratorNameAttr, name),
+	)
 	ctx, span := Tracer(ctx).Start(
 		ctx,
 		name,
 		telemetry.Reveal(),
-		trace.WithAttributes(
-			attribute.Bool(telemetry.UIRollUpLogsAttr, true),
-			attribute.Bool(telemetry.UIRollUpSpansAttr, true),
-			attribute.String(telemetry.GeneratorNameAttr, name),
-		),
+		trace.WithAttributes(attrs...),
 	)
 	defer telemetry.EndWithCause(span, &rerr)
 
@@ -1245,14 +1399,15 @@ func (action *Action) startService(
 	service dagql.ObjectResult[*Service],
 ) (_ *runUpStartResult, rerr error) {
 	name := action.qualifiedName()
+	attrs := append(action.telemetryAttributes(),
+		attribute.Bool(telemetry.UIRollUpLogsAttr, true),
+		attribute.String(serviceNameAttr, name),
+	)
 	ctx, span := Tracer(ctx).Start(
 		ctx,
 		name,
 		telemetry.Reveal(),
-		trace.WithAttributes(
-			attribute.Bool(telemetry.UIRollUpLogsAttr, true),
-			attribute.String(serviceNameAttr, name),
-		),
+		trace.WithAttributes(attrs...),
 	)
 	defer func() {
 		telemetry.EndWithCause(span, &rerr)

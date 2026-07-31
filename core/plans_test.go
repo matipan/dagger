@@ -8,8 +8,98 @@ import (
 
 	"github.com/dagger/dagger/dagql"
 	"github.com/dagger/dagger/dagql/call"
+	"github.com/dagger/dagger/engine/telemetryattrs"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
+
+func TestArtifactActionTelemetryDescribesBatchScope(t *testing.T) {
+	dimensions := []*ArtifactDimension{
+		{Name: ArtifactTypeDimension, KeyType: (&TypeDef{}).WithKind(TypeDefKindString)},
+		{Name: "go-module", KeyType: (&TypeDef{}).WithKind(TypeDefKindString)},
+		{Name: "go-directory", KeyType: (&TypeDef{}).WithKind(TypeDefKindString)},
+		{Name: "go-test", KeyType: (&TypeDef{}).WithKind(TypeDefKindString)},
+	}
+	row := func(testName string) *artifactRow {
+		return &artifactRow{
+			coordinates: []dagql.Nullable[dagql.String]{
+				dagql.NonNull(dagql.String("go-test")),
+				dagql.NonNull(dagql.String("api")),
+				dagql.NonNull(dagql.String("api/auth")),
+				dagql.NonNull(dagql.String(testName)),
+			},
+			selectorPath:         []dagql.Selector{{Field: "go"}, {Field: "tests"}},
+			collectionOccurrence: "go.tests",
+		}
+	}
+	action := &Action{
+		verb:              VerbCheck,
+		functionPath:      []string{"test"},
+		sourceModuleName:  "go",
+		collectionBatched: true,
+		target: &Artifacts{
+			dimensions: dimensions,
+			rows:       []*artifactRow{row("TestAuth"), row("TestJWT")},
+		},
+	}
+
+	metadata := action.artifactTargetTelemetry()
+	require.Equal(t, 2, metadata.count)
+	require.Equal(t,
+		[]string{"type", "go-module", "go-directory"},
+		metadata.commonDimensions,
+	)
+	require.Equal(t,
+		[]string{"go-test", "api", "api/auth"},
+		metadata.commonCoordinates,
+	)
+	require.Equal(t, "go-test", metadata.varyingDimension)
+	require.Equal(t, []string{"TestAuth", "TestJWT"}, metadata.varyingCoordinates)
+	require.Equal(t, "go-test:api:api/auth:test", action.qualifiedName())
+
+	attrs := attributeValues(action.telemetryAttributes())
+	require.NotEmpty(t, attrs[telemetryattrs.ArtifactActionIDAttr])
+	require.Equal(t, "CHECK", attrs[telemetryattrs.ArtifactActionVerbAttr])
+	require.Equal(t, []string{"test"}, attrs[telemetryattrs.ArtifactActionFunctionPathAttr])
+	require.Equal(t, int64(2), attrs[telemetryattrs.ArtifactActionTargetCountAttr])
+	require.Equal(t, true, attrs[telemetryattrs.ArtifactActionCollectionBatchedAttr])
+
+	reordered := action.Clone()
+	reordered.target.rows[0], reordered.target.rows[1] = reordered.target.rows[1], reordered.target.rows[0]
+	reorderedAttrs := attributeValues(reordered.telemetryAttributes())
+	require.Equal(
+		t,
+		attrs[telemetryattrs.ArtifactActionIDAttr],
+		reorderedAttrs[telemetryattrs.ArtifactActionIDAttr],
+		"action identity must not depend on discovery order",
+	)
+}
+
+func TestArtifactPlanTelemetrySummarizesGraph(t *testing.T) {
+	plan := &Plan{
+		verb: VerbCheck,
+		nodes: []*Action{
+			{target: &Artifacts{rows: []*artifactRow{{}, {}}}, collectionBatched: true},
+			{target: &Artifacts{rows: []*artifactRow{{}}}},
+		},
+	}
+	span := &telemetryTestSpan{}
+	plan.recordTelemetry(trace.ContextWithSpan(context.Background(), span))
+	attrs := attributeValues(span.attrs)
+	require.Equal(t, "CHECK", attrs[telemetryattrs.ArtifactPlanVerbAttr])
+	require.Equal(t, int64(2), attrs[telemetryattrs.ArtifactPlanActionCountAttr])
+	require.Equal(t, int64(3), attrs[telemetryattrs.ArtifactPlanTargetCountAttr])
+	require.Equal(t, int64(1), attrs[telemetryattrs.ArtifactPlanBatchCountAttr])
+}
+
+func attributeValues(attrs []attribute.KeyValue) map[string]any {
+	values := make(map[string]any, len(attrs))
+	for _, attr := range attrs {
+		values[string(attr.Key)] = attr.Value.AsInterface()
+	}
+	return values
+}
 
 func TestArtifactActionsDiscoverArtifactRelativePaths(t *testing.T) {
 	artifacts := planTestArtifacts(t)

@@ -2155,6 +2155,11 @@ func cloudLogsTarget(span *dagui.Span) string {
 		return ""
 	case span.TestCaseName != "":
 		return fmt.Sprintf("--test %q", span.TestCaseName)
+	case span.ArtifactActionID != "":
+		// Distinct artifact actions may intentionally share a legacy check name
+		// (for example one batched `test` action per Go directory). The span ID is
+		// the exact selector in that case.
+		return fmt.Sprintf("--span %s", span.ID)
 	case span.CheckName != "":
 		return fmt.Sprintf("--check %q", span.CheckName)
 	default:

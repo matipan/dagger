@@ -773,6 +773,51 @@ func TestRerunSectionLocalOnlyWithoutNativeCI(t *testing.T) {
 	}
 }
 
+func TestArtifactCheckReportShowsBatchScopeAndExactRerun(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	db := dagui.NewDB()
+	rootID := prettyTestSpanID(1)
+	checkID := prettyTestSpanID(2)
+	start := time.Unix(100, 0)
+	db.ImportSnapshots([]dagui.SpanSnapshot{
+		{
+			ID: rootID, TraceID: prettyTestTraceID(), Name: "check",
+			StartTime: start, EndTime: start.Add(2 * time.Second), Final: true,
+		},
+		{
+			ID: checkID, TraceID: prettyTestTraceID(), ParentID: rootID,
+			Name: "go-test:api:api/auth:test", CheckName: "go-test:api:api/auth:test",
+			StartTime: start, EndTime: start.Add(2 * time.Second),
+			Status: sdktrace.Status{Code: codes.Error}, Final: true,
+			ArtifactActionID:                 "sha256:action",
+			ArtifactActionVerb:               "CHECK",
+			ArtifactActionFunctionPath:       []string{"test"},
+			ArtifactActionSourceModule:       "go",
+			ArtifactActionCollectionBatched:  true,
+			ArtifactActionTargetCount:        2,
+			ArtifactActionCommonDimensions:   []string{"type", "go-module", "go-directory"},
+			ArtifactActionCommonCoordinates:  []string{"go-test", "api", "api/auth"},
+			ArtifactActionVaryingDimension:   "go-test",
+			ArtifactActionVaryingCoordinates: []string{"TestAuth", "TestJWT"},
+		},
+	})
+	db.SetPrimarySpan(rootID)
+
+	fe := NewWithDB(io.Discard, db)
+	fe.finalRender = true
+	fe.recalculateViewLocked()
+	r := newRenderer(fe.db, 0, fe.FrontendOpts, true)
+	report := strings.Join(fe.checksReport(tuist.Context{Width: 120}, r, false), "\n")
+	if !strings.Contains(report, "test --go-module=api --go-directory=api/auth 2 go-tests") {
+		t.Fatalf("artifact batch scope missing from check report:\n%s", report)
+	}
+	rerun := strings.Join(fe.renderRerunSection(nil), "\n")
+	want := "dagger check --go-module=api --go-directory=api/auth --go-test=TestAuth --go-test=TestJWT test"
+	if !strings.Contains(rerun, want) {
+		t.Fatalf("artifact rerun missing %q:\n%s", want, rerun)
+	}
+}
+
 func TestOutermostSurfacedCheckRollsUpNestedName(t *testing.T) {
 	db := rerunReportDB(t)
 	fe := NewWithDB(io.Discard, db)

@@ -296,6 +296,22 @@ type SpanSnapshot struct {
 	CheckName   string `json:",omitempty"`
 	CheckPassed bool   `json:",omitempty"`
 
+	// Artifact action identity and target scope. These are carried alongside
+	// CheckName/GeneratorName/ServiceName so old traces and consumers keep
+	// working while artifact-aware UIs can represent batched actions exactly.
+	ArtifactActionID                 string   `json:",omitempty"`
+	ArtifactActionVerb               string   `json:",omitempty"`
+	ArtifactActionFunctionPath       []string `json:",omitempty"`
+	ArtifactActionSourceModule       string   `json:",omitempty"`
+	ArtifactActionCollectionBatched  bool     `json:",omitempty"`
+	ArtifactActionTargetCount        int      `json:",omitempty"`
+	ArtifactActionTargetDigest       string   `json:",omitempty"`
+	ArtifactActionCommonDimensions   []string `json:",omitempty"`
+	ArtifactActionCommonCoordinates  []string `json:",omitempty"`
+	ArtifactActionVaryingDimension   string   `json:",omitempty"`
+	ArtifactActionVaryingCoordinates []string `json:",omitempty"`
+	ArtifactActionTargetsTruncated   bool     `json:",omitempty"`
+
 	// Generator name
 	GeneratorName string `json:",omitempty"`
 
@@ -335,6 +351,52 @@ type SpanSnapshot struct {
 	Progress *SpanProgress `json:",omitempty"`
 
 	ExtraAttributes map[string]json.RawMessage `json:",omitempty"`
+}
+
+// CheckKey returns the semantic identity used to group repeated snapshots of
+// one check. Artifact actions use their stable action ID; legacy checks fall
+// back to the check name.
+func (snapshot *SpanSnapshot) CheckKey() string {
+	if snapshot.ArtifactActionID != "" {
+		return "artifact-action:" + snapshot.ArtifactActionID
+	}
+	return snapshot.CheckName
+}
+
+// ArtifactActionName is the user-facing action path, such as "test" or
+// "validate:licenses".
+func (snapshot *SpanSnapshot) ArtifactActionName() string {
+	return strings.Join(snapshot.ArtifactActionFunctionPath, ":")
+}
+
+// ArtifactActionTargetArgs reconstructs the artifact filter arguments encoded
+// by this action span. When exact is false, varying collection item values are
+// omitted to keep a batch readable. The boolean reports whether the result is
+// an exact representation of the target scope.
+func (snapshot *SpanSnapshot) ArtifactActionTargetArgs(exact bool) ([]string, bool) {
+	args := make([]string, 0, len(snapshot.ArtifactActionCommonDimensions)+len(snapshot.ArtifactActionVaryingCoordinates))
+	hasSpecificDimension := false
+	for _, dimension := range snapshot.ArtifactActionCommonDimensions {
+		if dimension != "type" {
+			hasSpecificDimension = true
+			break
+		}
+	}
+	for index, dimension := range snapshot.ArtifactActionCommonDimensions {
+		if index >= len(snapshot.ArtifactActionCommonCoordinates) {
+			break
+		}
+		if dimension == "type" && hasSpecificDimension {
+			continue
+		}
+		args = append(args, "--"+dimension+"="+snapshot.ArtifactActionCommonCoordinates[index])
+	}
+	if exact && snapshot.ArtifactActionVaryingDimension != "" {
+		for _, coordinate := range snapshot.ArtifactActionVaryingCoordinates {
+			args = append(args, "--"+snapshot.ArtifactActionVaryingDimension+"="+coordinate)
+		}
+	}
+	return args, !exact || !snapshot.ArtifactActionTargetsTruncated
 }
 
 type SpanLink struct {
@@ -447,6 +509,42 @@ func (snapshot *SpanSnapshot) ProcessAttribute(name string, val any) { //nolint:
 		// TODO: redundant with span status?
 		snapshot.CheckPassed = val.(bool)
 
+	case telemetryattrs.ArtifactActionIDAttr:
+		snapshot.ArtifactActionID = val.(string)
+
+	case telemetryattrs.ArtifactActionVerbAttr:
+		snapshot.ArtifactActionVerb = val.(string)
+
+	case telemetryattrs.ArtifactActionFunctionPathAttr:
+		snapshot.ArtifactActionFunctionPath = sliceOf[string](val)
+
+	case telemetryattrs.ArtifactActionSourceModuleAttr:
+		snapshot.ArtifactActionSourceModule = val.(string)
+
+	case telemetryattrs.ArtifactActionCollectionBatchedAttr:
+		snapshot.ArtifactActionCollectionBatched = val.(bool)
+
+	case telemetryattrs.ArtifactActionTargetCountAttr:
+		snapshot.ArtifactActionTargetCount = intOf(val)
+
+	case telemetryattrs.ArtifactActionTargetDigestAttr:
+		snapshot.ArtifactActionTargetDigest = val.(string)
+
+	case telemetryattrs.ArtifactActionCommonDimensionsAttr:
+		snapshot.ArtifactActionCommonDimensions = sliceOf[string](val)
+
+	case telemetryattrs.ArtifactActionCommonCoordinatesAttr:
+		snapshot.ArtifactActionCommonCoordinates = sliceOf[string](val)
+
+	case telemetryattrs.ArtifactActionVaryingDimensionAttr:
+		snapshot.ArtifactActionVaryingDimension = val.(string)
+
+	case telemetryattrs.ArtifactActionVaryingCoordinatesAttr:
+		snapshot.ArtifactActionVaryingCoordinates = sliceOf[string](val)
+
+	case telemetryattrs.ArtifactActionTargetsTruncatedAttr:
+		snapshot.ArtifactActionTargetsTruncated = val.(bool)
+
 	case telemetry.GeneratorNameAttr:
 		snapshot.GeneratorName = val.(string)
 
@@ -523,6 +621,31 @@ func sliceOf[T any](val any) []T {
 		ts[i] = v.(T)
 	}
 	return ts
+}
+
+func intOf(val any) int {
+	switch value := val.(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	case json.Number:
+		parsed, err := value.Int64()
+		if err != nil {
+			panic(err)
+		}
+		return int(parsed)
+	case string:
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			panic(err)
+		}
+		return parsed
+	default:
+		panic(fmt.Sprintf("cannot convert %T to int", val))
+	}
 }
 
 // PropagateStatusToParentsAndLinks updates the running and failed state of all

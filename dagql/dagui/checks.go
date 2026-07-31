@@ -4,9 +4,10 @@ import (
 	"sort"
 )
 
-// CheckNode is a surfaced trace-level check (deduped by check name), with any
-// nested child checks beneath it.
+// CheckNode is a surfaced trace-level check (deduped by semantic identity),
+// with any nested child checks beneath it.
 type CheckNode struct {
+	Key      string
 	Name     string
 	Span     *Span // representative span (a failed one when the check failed)
 	Failed   bool
@@ -30,9 +31,10 @@ type CheckNode struct {
 // treated as contained too; a legitimate trace-level check always reaches root,
 // since the priority fetch loads its full ancestor chain.
 //
-// Checks are deduped by name (a check is failed if any of its spans failed) and
+// Artifact-aware checks are deduped by stable action ID; legacy checks are
+// deduped by name. A check is failed if any of its spans failed. Checks are
 // nested under the nearest surfaced ancestor check. Roots and children are
-// ordered failed-first, then by name.
+// ordered failed-first, then by name and identity.
 //
 // The result is cached per DB mutation: every input (check names, ancestor
 // chains, boundaries, statuses, the root span) only changes when a span is
@@ -50,28 +52,29 @@ func (db *DB) SurfacedChecks() []*CheckNode {
 
 func (db *DB) buildSurfacedChecks() []*CheckNode {
 	type info struct {
-		span       *Span
-		parentName string
-		failed     bool
+		span      *Span
+		parentKey string
+		failed    bool
 	}
-	byName := map[string]*info{}
+	byKey := map[string]*info{}
 	for span := range db.Spans.Iter() {
 		if span.CheckName == "" {
 			continue
 		}
+		spanKey := span.CheckKey()
 		// Walk ancestors toward the root: a Boundary/Encapsulate between this check
 		// and the root contains it (hide it); otherwise remember the nearest
 		// ancestor check to nest under, and note whether we reach the root at all.
 		contained := false
-		parentName := ""
+		parentKey := ""
 		reachedRoot := span == db.RootSpan
 		for p := span.ParentSpan; p != nil; p = p.ParentSpan {
 			if p.Boundary || p.Encapsulate {
 				contained = true
 				break
 			}
-			if parentName == "" && p.CheckName != "" && p.CheckName != span.CheckName {
-				parentName = p.CheckName
+			if parentKey == "" && p.CheckName != "" && p.CheckKey() != spanKey {
+				parentKey = p.CheckKey()
 			}
 			if p == db.RootSpan {
 				reachedRoot = true
@@ -93,29 +96,29 @@ func (db *DB) buildSurfacedChecks() []*CheckNode {
 			continue
 		}
 		failed := span.IsFailedOrCausedFailure()
-		cur, ok := byName[span.CheckName]
+		cur, ok := byKey[spanKey]
 		switch {
 		case !ok:
-			byName[span.CheckName] = &info{span: span, parentName: parentName, failed: failed}
+			byKey[spanKey] = &info{span: span, parentKey: parentKey, failed: failed}
 		case failed && !cur.failed:
 			// prefer a failed representative so the rendered detail points at the
 			// failure
 			cur.span = span
 			cur.failed = true
-			cur.parentName = parentName
+			cur.parentKey = parentKey
 		default:
 			cur.failed = cur.failed || failed
 		}
 	}
 
-	nodes := make(map[string]*CheckNode, len(byName))
-	for name, in := range byName {
-		nodes[name] = &CheckNode{Name: name, Span: in.span, Failed: in.failed}
+	nodes := make(map[string]*CheckNode, len(byKey))
+	for key, in := range byKey {
+		nodes[key] = &CheckNode{Key: key, Name: in.span.CheckName, Span: in.span, Failed: in.failed}
 	}
 	var roots []*CheckNode
-	for name, in := range byName {
-		node := nodes[name]
-		if parent, ok := nodes[in.parentName]; ok && in.parentName != "" {
+	for key, in := range byKey {
+		node := nodes[key]
+		if parent, ok := nodes[in.parentKey]; ok && in.parentKey != "" {
 			parent.Children = append(parent.Children, node)
 		} else {
 			roots = append(roots, node)
@@ -128,7 +131,10 @@ func (db *DB) buildSurfacedChecks() []*CheckNode {
 			if ns[i].Failed != ns[j].Failed {
 				return ns[i].Failed // failed first
 			}
-			return ns[i].Name < ns[j].Name
+			if ns[i].Name != ns[j].Name {
+				return ns[i].Name < ns[j].Name
+			}
+			return ns[i].Key < ns[j].Key
 		})
 		for _, n := range ns {
 			sortNodes(n.Children)

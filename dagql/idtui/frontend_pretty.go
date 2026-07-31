@@ -1012,8 +1012,12 @@ func (fe *frontendPretty) reportHeartbeatLine(elapsed time.Duration) string {
 		}
 		switch {
 		case running:
+			name := checkDisplayName(span, span.CheckName)
+			if target := artifactActionTargetDisplay(span); target != "" {
+				name += " " + target
+			}
 			runningChecks = append(runningChecks,
-				fmt.Sprintf("%s (%s)", span.CheckName, dagui.FormatDuration(displayDuration(span, now))))
+				fmt.Sprintf("%s (%s)", name, dagui.FormatDuration(displayDuration(span, now))))
 		case span.IsFailed():
 			checksDone++
 			checksFailed++
@@ -2698,33 +2702,33 @@ func (fe *frontendPretty) renderRerunSection(zoomed *dagui.Span) []string {
 	}
 	roots := fe.db.SurfacedChecks()
 
-	var names []string
+	var checks []*dagui.CheckNode
 	seen := map[string]bool{}
-	add := func(name string) {
-		if name == "" || seen[name] {
+	add := func(node *dagui.CheckNode) {
+		if node == nil || node.Key == "" || seen[node.Key] {
 			return
 		}
-		seen[name] = true
-		names = append(names, name)
+		seen[node.Key] = true
+		checks = append(checks, node)
 	}
 
 	switch {
 	case zoomed != nil && zoomed.CheckName != "":
 		// Zoomed to a check: re-run its outermost surfaced check (the re-runnable
 		// unit), if that check failed.
-		if root := outermostSurfacedCheck(roots, zoomed.CheckName); root != nil && root.Failed {
-			add(root.Name)
+		if root := outermostSurfacedCheck(roots, zoomed.CheckKey()); root != nil && root.Failed {
+			add(root)
 		}
 	case zoomed == nil:
 		// Whole trace: re-run every failed outermost check.
 		for _, n := range roots {
 			if n.Failed {
-				add(n.Name)
+				add(n)
 			}
 		}
 	}
 
-	if len(names) == 0 {
+	if len(checks) == 0 {
 		return nil
 	}
 
@@ -2735,18 +2739,22 @@ func (fe *frontendPretty) renderRerunSection(zoomed *dagui.Span) []string {
 	// commit). A distinct section from the local reproduce: it kicks off a fresh
 	// Cloud run, it doesn't run anything here.
 	if fe.ciMeta != nil && fe.ciMeta.isNativeCI && fe.ciMeta.commit != "" {
-		body := make([]string, 0, len(names))
-		for _, name := range names {
-			body = append(body, fmt.Sprintf("dagger cloud rerun --commit %s --check %q", fe.ciMeta.commit, name))
+		body := make([]string, 0, len(checks))
+		for _, check := range checks {
+			body = append(body, fmt.Sprintf("dagger cloud rerun --commit %s --check %q", fe.ciMeta.commit, check.Name))
 		}
 		lines = append(lines, reportSectionLines(out, "RE-RUN IN CI", body)...)
 	}
 
 	// Run the check locally to reproduce (and then fix) the failure against your
 	// working tree.
-	body := make([]string, 0, len(names))
-	for _, name := range names {
-		body = append(body, fmt.Sprintf("dagger check %q", name))
+	body := make([]string, 0, len(checks))
+	for _, check := range checks {
+		if command := artifactActionCheckCommand(check.Span); command != "" {
+			body = append(body, command)
+		} else {
+			body = append(body, fmt.Sprintf("dagger check %q", check.Name))
+		}
 	}
 	if len(lines) > 0 {
 		lines = append(lines, "")
@@ -2757,12 +2765,12 @@ func (fe *frontendPretty) renderRerunSection(zoomed *dagui.Span) []string {
 }
 
 // outermostSurfacedCheck returns the top-level surfaced check whose subtree
-// contains checkName (itself included), or nil. It maps a (possibly nested)
+// contains checkKey (itself included), or nil. It maps a (possibly nested)
 // check to the outermost unit that 'dagger cloud rerun'/'dagger check' can target.
-func outermostSurfacedCheck(roots []*dagui.CheckNode, checkName string) *dagui.CheckNode {
+func outermostSurfacedCheck(roots []*dagui.CheckNode, checkKey string) *dagui.CheckNode {
 	var contains func(n *dagui.CheckNode) bool
 	contains = func(n *dagui.CheckNode) bool {
-		if n.Name == checkName {
+		if n.Key == checkKey {
 			return true
 		}
 		for _, c := range n.Children {
@@ -5224,13 +5232,24 @@ func (fe *frontendPretty) renderStepTitle(ctx tuist.Context, out TermOutput, r *
 			return err
 		}
 	} else if span != nil {
-		if span.Name == "" {
+		name := span.Name
+		if span.ArtifactActionID != "" {
+			parts := []string{checkDisplayName(span, span.Name)}
+			if target := artifactActionTargetDisplay(span); target != "" {
+				parts = append(parts, target)
+			}
+			if summary := artifactActionTargetSummary(span); summary != "" {
+				parts = append(parts, summary)
+			}
+			name = strings.Join(parts, " ")
+		}
+		if name == "" {
 			empty = true
 		}
 		if progressRow {
 			// keep the focus on the bar; the name is a label
-			fmt.Fprint(out, out.String(span.Name).Faint())
-		} else if err := r.renderSpan(out, span, span.Name); err != nil {
+			fmt.Fprint(out, out.String(name).Faint())
+		} else if err := r.renderSpan(out, span, name); err != nil {
 			return err
 		}
 	}

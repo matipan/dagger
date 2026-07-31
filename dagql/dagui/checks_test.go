@@ -163,3 +163,38 @@ func TestSurfacedChecksMemoizedPerFrame(t *testing.T) {
 		t.Fatalf("failed check must sort first, got %+v", fresh[0])
 	}
 }
+
+func TestSurfacedChecksKeepsDistinctArtifactActionsWithSameCheckName(t *testing.T) {
+	db := NewDB()
+	db.ImportSnapshots([]SpanSnapshot{
+		checkSnapshot(1, "root", SpanID{}, ""),
+		{
+			ID:               testID(2),
+			TraceID:          TraceID{TraceID: trace.TraceID{1}},
+			Name:             "test",
+			ParentID:         testID(1),
+			CheckName:        "test",
+			ArtifactActionID: "action-auth",
+			StartTime:        time.Unix(2, 0),
+			EndTime:          time.Unix(3, 0),
+		},
+		{
+			ID:               testID(3),
+			TraceID:          TraceID{TraceID: trace.TraceID{1}},
+			Name:             "test",
+			ParentID:         testID(1),
+			CheckName:        "test",
+			ArtifactActionID: "action-db",
+			StartTime:        time.Unix(2, 0),
+			EndTime:          time.Unix(3, 0),
+		},
+	})
+
+	roots := db.SurfacedChecks()
+	if len(roots) != 2 {
+		t.Fatalf("SurfacedChecks() returned %d checks, want 2 distinct artifact actions", len(roots))
+	}
+	if roots[0].Key == roots[1].Key {
+		t.Fatalf("artifact actions have the same key %q", roots[0].Key)
+	}
+}
