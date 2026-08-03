@@ -145,7 +145,7 @@ type JSON string
 // The format is [os]/[platform]/[version] (e.g., "darwin/arm64/v7", "windows/amd64", "linux/arm64").
 type Platform string
 
-// A glob pattern matching artifact fields or lifecycle action paths.
+// A type-rooted glob matching artifact fields or lifecycle action paths.
 type TargetPattern string
 
 // The absence of a value.
@@ -653,9 +653,9 @@ func (r *Artifact) Coordinate(ctx context.Context, name string) (string, error) 
 	return response, q.Execute(ctx)
 }
 
-// Ordered coordinate row for this artifact.
-func (r *Artifact) Coordinates(ctx context.Context) ([]string, error) {
-	q := r.query.Select("coordinates")
+// Coordinate dimensions in artifact ancestry order.
+func (r *Artifact) CoordinateDimensions(ctx context.Context) ([]string, error) {
+	q := r.query.Select("coordinateDimensions")
 
 	var response []string
 
@@ -663,9 +663,9 @@ func (r *Artifact) Coordinates(ctx context.Context) ([]string, error) {
 	return response, q.Execute(ctx)
 }
 
-// Coordinate dimensions in artifact ancestry order.
-func (r *Artifact) CoordinateDimensions(ctx context.Context) ([]string, error) {
-	q := r.query.Select("coordinateDimensions")
+// Ordered coordinate row for this artifact.
+func (r *Artifact) Coordinates(ctx context.Context) ([]string, error) {
+	q := r.query.Select("coordinates")
 
 	var response []string
 
@@ -988,6 +988,8 @@ func (r *Artifacts) Items(ctx context.Context) ([]Artifact, error) {
 
 // ArtifactsMaterializeOpts contains options for Artifacts.Materialize
 type ArtifactsMaterializeOpts struct {
+	// Load only workspace modules that can provide these type-rooted targets.
+	Include []TargetPattern
 	// Keep artifacts from modules that load successfully instead of failing on the first module load error.
 	BestEffort bool
 }
@@ -996,6 +998,10 @@ type ArtifactsMaterializeOpts struct {
 func (r *Artifacts) Materialize(opts ...ArtifactsMaterializeOpts) *Artifacts {
 	q := r.query.Select("materialize")
 	for i := len(opts) - 1; i >= 0; i-- {
+		// `include` optional argument
+		if !querybuilder.IsZeroValue(opts[i].Include) {
+			q = q.Arg("include", opts[i].Include)
+		}
 		// `bestEffort` optional argument
 		if !querybuilder.IsZeroValue(opts[i].BestEffort) {
 			q = q.Arg("bestEffort", opts[i].BestEffort)

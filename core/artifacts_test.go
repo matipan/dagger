@@ -215,6 +215,26 @@ func TestArtifactsDiscoverStaticFieldOccurrences(t *testing.T) {
 		"e2e-test-suite|sdk-dev:python|e2e:sdksarm",
 	}, artifactCoordinateRows(artifacts))
 
+	var goTargets map[string][]string = map[string][]string{}
+	for _, row := range artifacts.rows {
+		if row.coordinates[0].Value.String() != "e2e-test-suite" ||
+			!row.coordinates[1].Valid ||
+			row.coordinates[1].Value.String() != "sdk-dev:go" {
+			continue
+		}
+		goTargets[row.coordinates[2].Value.String()] = row.targetPatterns
+	}
+	require.Equal(t, map[string][]string{
+		"e2e:sdks": {
+			"e2e-sdk-dev:go",
+			"e2e:sdks:go",
+		},
+		"e2e:sdksarm": {
+			"e2e-sdk-dev:go",
+			"e2e:sdksarm:go",
+		},
+	}, goTargets)
+
 	filtered, err := artifacts.FilterCoordinates(
 		"e2e-test-suite",
 		[]string{"sdk-dev:go"},

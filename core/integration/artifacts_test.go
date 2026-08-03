@@ -238,7 +238,7 @@ func (suite *TestSuite) Verify() error {
 					values: ["sdk-dev:go"],
 				) {
 					items { coordinates }
-					plan(verb: CHECK, include: ["verify"]) {
+					plan(verb: CHECK, include: ["e2e-test-suite:verify"]) {
 						nodes {
 							functionPath
 							target { items { coordinates } }
@@ -277,19 +277,28 @@ func (suite *TestSuite) Verify() error {
 	}`, out)
 
 	for _, args := range [][]string{
-		{"check", "--e2e-test-suite=sdk-dev:go", "verify"},
+		{"check", "--e2e-test-suite=sdk-dev:go", "e2e-test-suite:verify"},
 		{"check", "e2e-test-suite:verify"},
 		{
 			"check",
 			"--e2e-sdk-dev=e2e:sdks-arm",
 			"--e2e-test-suite=sdk-dev:go",
-			"verify",
+			"e2e-test-suite:verify",
 		},
-		{"check", "sdk-dev:go"},
+		{"check", "e2e-sdk-dev:go"},
+		{"check", "e2e:sdks-arm:go:verify"},
 	} {
 		out, err = mod.With(daggerExec(args...)).CombinedOutput(ctx)
 		require.NoError(t, err, out)
 	}
+
+	out, err = mod.With(daggerExecFail("check", "verify")).CombinedOutput(ctx)
+	require.NoError(t, err, out)
+	require.Contains(
+		t,
+		out,
+		`invalid target pattern "verify": expected <type>:<field>[:<field>...]`,
+	)
 
 	out, err = mod.With(daggerExec("check", "-l")).Stdout(ctx)
 	require.NoError(t, err)
@@ -297,9 +306,9 @@ func (suite *TestSuite) Verify() error {
 	require.Contains(
 		t,
 		lines,
-		"--e2e-sdk-dev=e2e:sdks-arm --e2e-test-suite=sdk-dev:go verify",
+		"--e2e-sdk-dev=e2e:sdks-arm --e2e-test-suite=sdk-dev:go e2e-test-suite:verify",
 	)
-	require.NotContains(t, lines, "verify")
-	require.NotContains(t, lines, "--e2e-test-suite=sdk-dev:go verify")
+	require.NotContains(t, lines, "e2e-test-suite:verify")
+	require.NotContains(t, lines, "--e2e-test-suite=sdk-dev:go e2e-test-suite:verify")
 	require.NotContains(t, lines, "--e2e-sdk-dev=e2e:sdks-arm --e2e-test-suite=sdk-dev:go")
 }

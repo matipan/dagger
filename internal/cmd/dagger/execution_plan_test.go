@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"testing"
 
+	"dagger.io/dagger"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +29,7 @@ func TestPrepareExecutionPlanCommand(t *testing.T) {
 		"--type", "go",
 		"go:lint",
 		"-l",
-		"tests:**",
+		"go:tests:**",
 		"--mod=.",
 		"--progress", "plain",
 	})
@@ -40,7 +41,7 @@ func TestPrepareExecutionPlanCommand(t *testing.T) {
 	require.Equal(t, []string{
 		"--type", "go",
 		"go:lint",
-		"tests:**",
+		"go:tests:**",
 	}, artifactArgs)
 }
 
@@ -48,12 +49,12 @@ func TestPrepareExecutionPlanCommandHelpIsDeferred(t *testing.T) {
 	command := &cobra.Command{Use: "generate"}
 
 	artifactArgs, needsHelp, err := prepareExecutionPlanCommand(command, []string{
-		"codegen",
+		"go:codegen",
 		"--help",
 	})
 	require.NoError(t, err)
 	require.True(t, needsHelp)
-	require.Equal(t, []string{"codegen"}, artifactArgs)
+	require.Equal(t, []string{"go:codegen"}, artifactArgs)
 }
 
 func TestPrepareExecutionPlanCommandRejectsUnknownShorthand(t *testing.T) {
@@ -71,10 +72,10 @@ func TestPrepareExecutionPlanCommandAcceptsAttachedShorthandValue(t *testing.T) 
 	var module string
 	command.Flags().StringVarP(&module, "mod", "m", "", "")
 
-	artifactArgs, _, err := prepareExecutionPlanCommand(command, []string{"-m.", "lint"})
+	artifactArgs, _, err := prepareExecutionPlanCommand(command, []string{"-m.", "go:lint"})
 	require.NoError(t, err)
 	require.Equal(t, ".", module)
-	require.Equal(t, []string{"lint"}, artifactArgs)
+	require.Equal(t, []string{"go:lint"}, artifactArgs)
 }
 
 func TestPrepareExecutionPlanCommandDoesNotConsumeCollectionAliasValue(t *testing.T) {
@@ -85,10 +86,69 @@ func TestPrepareExecutionPlanCommandDoesNotConsumeCollectionAliasValue(t *testin
 
 	artifactArgs, _, err := prepareExecutionPlanCommand(
 		command,
-		[]string{"--go-tests", "lint"},
+		[]string{"--go-tests", "go-test:lint"},
 	)
 	require.NoError(t, err)
-	require.Equal(t, []string{"--go-tests", "lint"}, artifactArgs)
+	require.Equal(t, []string{"--go-tests", "go-test:lint"}, artifactArgs)
+}
+
+func TestExecutionPlanModuleScope(t *testing.T) {
+	t.Run("uses positional target type", func(t *testing.T) {
+		require.Equal(t, "go-test", executionPlanModuleScope([]string{
+			"--go-module=api",
+			"go-test:test",
+		}))
+	})
+
+	t.Run("ambiguous separate filter disables narrowing", func(t *testing.T) {
+		require.Empty(t, executionPlanModuleScope([]string{
+			"--e2e-test-suite", "sdk-dev:go",
+			"e2e-test-suite:verify",
+		}))
+	})
+
+	t.Run("same type targets retain scope", func(t *testing.T) {
+		require.Equal(t, "go-test", executionPlanModuleScope([]string{
+			"go-test:test",
+			"go-test:lint",
+		}))
+	})
+
+	t.Run("different type targets disable narrowing", func(t *testing.T) {
+		require.Empty(t, executionPlanModuleScope([]string{
+			"go-test:test",
+			"python-test:test",
+		}))
+	})
+
+	t.Run("globbed type target disables narrowing", func(t *testing.T) {
+		require.Empty(t, executionPlanModuleScope([]string{
+			"go-*:test",
+		}))
+	})
+
+	t.Run("filters without targets do not set scope", func(t *testing.T) {
+		require.Empty(t, executionPlanModuleScope([]string{
+			"--go-test=TestAuth",
+		}))
+	})
+}
+
+func TestExecutionPlanTargetPatterns(t *testing.T) {
+	require.Equal(t, []dagger.TargetPattern{
+		"go-test:test",
+		"go-module:lint",
+	}, executionPlanTargetPatterns([]string{
+		"--go-module=api",
+		"--go-test=TestAuth",
+		"go-test:test",
+		"go-module:lint",
+	}))
+	require.Nil(t, executionPlanTargetPatterns([]string{
+		"--go-tests",
+		"go-test:test",
+		"python-test:test",
+	}))
 }
 
 func TestExecutionPlanRowLabelUsesOnlyVaryingCoordinates(t *testing.T) {
@@ -121,14 +181,14 @@ func TestExecutionPlanRecipesAreRunnableSelectors(t *testing.T) {
 	}
 
 	require.Equal(t, []string{
-		"--e2e-test-suite=e2e:engine run",
-		"--e2e-test-suite=e2e:engine verify",
-		"--e2e-test-suite=fluffy run",
-		"--e2e-test-suite=fluffy verify",
-		"--e2e-sdk-dev=e2e:sdks --e2e-test-suite=sdk-dev:go run",
-		"--e2e-sdk-dev=e2e:sdks --e2e-test-suite=sdk-dev:go verify",
-		"--e2e-sdk-dev=e2e:sdksarm --e2e-test-suite=sdk-dev:go run",
-		"--e2e-sdk-dev=e2e:sdksarm --e2e-test-suite=sdk-dev:go verify",
+		"--e2e-test-suite=e2e:engine e2e-test-suite:run",
+		"--e2e-test-suite=e2e:engine e2e-test-suite:verify",
+		"--e2e-test-suite=fluffy e2e-test-suite:run",
+		"--e2e-test-suite=fluffy e2e-test-suite:verify",
+		"--e2e-sdk-dev=e2e:sdks --e2e-test-suite=sdk-dev:go e2e-test-suite:run",
+		"--e2e-sdk-dev=e2e:sdks --e2e-test-suite=sdk-dev:go e2e-test-suite:verify",
+		"--e2e-sdk-dev=e2e:sdksarm --e2e-test-suite=sdk-dev:go e2e-test-suite:run",
+		"--e2e-sdk-dev=e2e:sdksarm --e2e-test-suite=sdk-dev:go e2e-test-suite:verify",
 	}, executionPlanRecipes(dimensions, rows))
 }
 
@@ -167,10 +227,10 @@ func TestExecutionPlanRecipesUseEveryArtifactCoordinate(t *testing.T) {
 	}
 
 	require.Equal(t, []string{
-		"--go-module=api execute",
-		"--go-module=api lint",
-		"--go-module=api --go-directory=api/auth execute",
-		"--go-module=api --go-directory=api/auth --go-test=TestAuth execute",
+		"--go-module=api go-module:execute",
+		"--go-module=api go-module:lint",
+		"--go-module=api --go-directory=api/auth go-directory:execute",
+		"--go-module=api --go-directory=api/auth --go-test=TestAuth go-test:execute",
 	}, executionPlanRecipes(dimensions, rows))
 }
 
@@ -188,7 +248,7 @@ func TestExecutionPlanRecipesUseArtifactAncestryOrder(t *testing.T) {
 	}}
 
 	require.Equal(t, []string{
-		"--e2e-platform=linux --e2e-sdk-dev=platform:sdk --e2e-test-suite=sdk-dev:go verify",
+		"--e2e-platform=linux --e2e-sdk-dev=platform:sdk --e2e-test-suite=sdk-dev:go e2e-test-suite:verify",
 	}, executionPlanRecipes(dimensions, rows))
 }
 
@@ -233,7 +293,7 @@ func TestExecutionPlanRecipesPreserveEmptyCoordinates(t *testing.T) {
 	}}
 
 	require.Equal(t, []string{
-		"--go-test='' run",
+		"--go-test='' go-test:run",
 	}, executionPlanRecipes(dimensions, rows))
 }
 

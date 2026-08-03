@@ -186,22 +186,23 @@ and `:` in keys are percent-escaped so a dynamic key cannot collide with a
 static field coordinate.
 
 Targets are positional `TargetPattern` values ([plans.md](./plans.md)). They
-match artifact types, static field occurrences, inherited occurrence lineage,
-and lifecycle action paths. For a static path `E2E.sdksARM.go`, the target
-candidates include `e2e`, `e2e:sdksarm`, `sdk-dev:go`, `e2e-test-suite`, and
-each candidate followed by the action path. A literal artifact target selects
-all actions beneath it.
+are type-rooted paths through static fields and lifecycle actions. Every type
+anchor uses its installed, module-namespaced name. For a static path
+`E2E.sdksARM.go`, candidates include `e2e:sdksarm:go`,
+`e2e-sdk-dev:go`, and `e2e-test-suite:verify` for its `verify` action. A literal
+field occurrence target selects all lifecycle actions beneath it. Bare action
+names and bare types are invalid.
 
 This separation permits both:
 
 ```console
-dagger check --e2e-test-suite=sdk-dev:go verify
-dagger check sdk-dev:go
+dagger check --e2e-test-suite=sdk-dev:go e2e-test-suite:verify
+dagger check e2e-sdk-dev:go
 ```
 
 The first filters every matching `TestSuite` occurrence and then selects only
-`verify`. The second is the compatibility form and selects every lifecycle
-action on every `SDKDev.go` occurrence.
+`verify`. The second selects every lifecycle action on every `SDKDev.go`
+occurrence.
 
 ### Dimension key types
 
@@ -359,8 +360,8 @@ If a more specific dimension already fixes the artifact kind, `--type` is
 redundant. These are equivalent:
 
 ```console
-dagger check --type=go-test --go-test=TestFoo run
-dagger check --go-test=TestFoo run
+dagger check --type=go-test --go-test=TestFoo go-test:run
+dagger check --go-test=TestFoo go-test:run
 ```
 
 ## Schema
@@ -377,6 +378,17 @@ A scoped, filterable view over workspace artifacts.
 Chainable: every filter returns a narrowed Artifacts.
 """
 type Artifacts {
+  """
+  Resolve this scope into a stable artifact snapshot.
+
+  `include` narrows workspace module loading to modules that can provide the
+  type-rooted targets. It does not filter rows or replace `plan(include:)`.
+  """
+  materialize(
+    include: [TargetPattern!]! = []
+    bestEffort: Boolean! = false
+  ): Artifacts!
+
   """
   Keep rows whose coordinate row has a non-null cell for the given dimension.
   Errors if the dimension is not present in the current scope.
@@ -471,8 +483,8 @@ Coordinate filters compose the obvious way:
 - different dimensions are **AND**
 
 ```console
-dagger check --type=go --type=js lint      # type is go OR js
-dagger check --type=go-test --go-test=TestFoo run   # type=go-test AND go-test=TestFoo
+dagger check --type=go --type=js go:lint js:lint    # type is go OR js
+dagger check --type=go-test --go-test=TestFoo go-test:run # type=go-test AND go-test=TestFoo
 ```
 
 Presence filtering keeps rows where a coordinate is non-null; coordinate
@@ -688,9 +700,10 @@ rows:
   { type=e2e-test-suite, e2e-sdk-dev=e2e:sdks-arm, e2e-test-suite=sdk-dev:go }
 ```
 
-The `TestSuite` row is selectable by either coordinate filter and by inherited
-targets such as `e2e`, `e2e:sdks-arm`, or `sdk-dev:go`. Replacing either stored
-field with an object-returning function makes it structural glue instead.
+The `TestSuite` row is selectable by either coordinate filter and by type-rooted
+targets such as `e2e:sdks-arm:go`, `e2e-sdk-dev:go`, or
+`e2e-test-suite:verify`. Replacing either stored field with an object-returning
+function makes it structural glue instead.
 
 #### Collection items add rows and dimensions
 

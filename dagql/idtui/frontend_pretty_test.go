@@ -812,7 +812,7 @@ func TestArtifactCheckReportShowsBatchScopeAndExactRerun(t *testing.T) {
 		t.Fatalf("artifact batch scope missing from check report:\n%s", report)
 	}
 	rerun := strings.Join(fe.renderRerunSection(nil), "\n")
-	want := "dagger check --go-module=api --go-directory=api/auth --go-test=TestAuth --go-test=TestJWT test"
+	want := "dagger check --go-module=api --go-directory=api/auth --go-test=TestAuth --go-test=TestJWT go-test:test"
 	if !strings.Contains(rerun, want) {
 		t.Fatalf("artifact rerun missing %q:\n%s", want, rerun)
 	}

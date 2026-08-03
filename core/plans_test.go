@@ -171,8 +171,8 @@ func TestArtifactsPlanFiltersAndOrdersActions(t *testing.T) {
 
 	plan, err := artifacts.Plan(
 		VerbCheck,
-		[]TargetPattern{"**"},
-		[]TargetPattern{"tests:*"},
+		[]TargetPattern{"**:**"},
+		[]TargetPattern{"go:tests:*"},
 	)
 	require.NoError(t, err)
 	require.Equal(t, []string{
@@ -183,7 +183,7 @@ func TestArtifactsPlanFiltersAndOrdersActions(t *testing.T) {
 
 	plan, err = artifacts.Plan(
 		VerbCheck,
-		[]TargetPattern{"tests:**"},
+		[]TargetPattern{"go:tests:**"},
 		nil,
 	)
 	require.NoError(t, err)
@@ -191,7 +191,7 @@ func TestArtifactsPlanFiltersAndOrdersActions(t *testing.T) {
 
 	plan, err = artifacts.Plan(
 		VerbCheck,
-		[]TargetPattern{"tests"},
+		[]TargetPattern{"go-toolchain-tests:unit"},
 		nil,
 	)
 	require.NoError(t, err)
@@ -204,14 +204,6 @@ func TestArtifactsPlanFiltersAndOrdersActions(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, []string{"go:CHECK:lint"}, planNodeKeys(t, plan))
-
-	plan, err = artifacts.Plan(VerbCheck, []TargetPattern{"go"}, nil)
-	require.NoError(t, err)
-	require.Equal(t, []string{
-		"go:CHECK:lint",
-		"go:CHECK:tests:unit",
-		"go-toolchain-state:CHECK:validate",
-	}, planNodeKeys(t, plan))
 
 	plan, err = artifacts.Plan(VerbCheck, []TargetPattern{"go:state"}, nil)
 	require.NoError(t, err)
@@ -226,7 +218,7 @@ func TestArtifactsPlanAppliesSourceSpecificExcludes(t *testing.T) {
 		nil,
 		nil,
 		map[string][]TargetPattern{
-			"go-toolchain": {"lint"},
+			"go-toolchain": {"go:lint"},
 		},
 	)
 	require.NoError(t, err)
@@ -242,8 +234,14 @@ func TestTargetPatternValidation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, TargetPattern("Tests:**"), decoded)
 
-	_, err = (TargetPattern("")).DecodeInput("[")
-	require.ErrorContains(t, err, `invalid target pattern "["`)
+	for _, pattern := range []string{"verify", "e2e-test-suite", "e2e:["} {
+		_, err = (TargetPattern("")).DecodeInput(pattern)
+		require.ErrorContains(t, err, `invalid target pattern "`+pattern+`"`)
+	}
+	for _, pattern := range []string{"e2e-test-suite:", ":verify", "e2e::verify"} {
+		_, err = (TargetPattern("")).DecodeInput(pattern)
+		require.ErrorContains(t, err, "type and field segments must not be empty")
+	}
 
 	action := &Action{
 		functionPath: []string{"verify"},
@@ -256,6 +254,10 @@ func TestTargetPatternValidation(t *testing.T) {
 				coordinates: []dagql.Nullable[dagql.String]{
 					dagql.NonNull(dagql.String("e2e-test-suite")),
 				},
+				targetPatterns: []string{
+					"e2e-sdk-dev:go",
+					"e2e:sdksarm:go",
+				},
 			}},
 		},
 	}
@@ -266,13 +268,25 @@ func TestTargetPatternValidation(t *testing.T) {
 	))
 	require.True(t, matchesTargetPatterns(
 		action,
-		[]TargetPattern{"e2e-test-suite"},
+		[]TargetPattern{"e2e-sdk-dev:go:verify"},
 		false,
 	))
+	require.True(t, matchesTargetPatterns(
+		action,
+		[]TargetPattern{"e2e:sdksarm:go"},
+		false,
+	))
+	require.False(t, matchesTargetPatterns(
+		action,
+		[]TargetPattern{"e2e:sdks:go:verify"},
+		false,
+	))
+	require.False(t, matchesTargetPatterns(action, []TargetPattern{"verify"}, false))
 }
 
 func TestStaticArtifactGeneratorTarget(t *testing.T) {
-	plan, err := planTestArtifacts(t).Plan(
+	artifacts := planTestArtifacts(t)
+	plan, err := artifacts.Plan(
 		VerbGenerate,
 		[]TargetPattern{"go:state"},
 		nil,
@@ -283,6 +297,19 @@ func TestStaticArtifactGeneratorTarget(t *testing.T) {
 		[]string{"go-toolchain-state:GENERATE:sync"},
 		planNodeKeys(t, plan),
 	)
+
+	for _, target := range []TargetPattern{
+		"go:state:sync",
+		"go-toolchain-state:sync",
+	} {
+		plan, err = artifacts.Plan(VerbGenerate, []TargetPattern{target}, nil)
+		require.NoError(t, err)
+		require.Equal(
+			t,
+			[]string{"go-toolchain-state:GENERATE:sync"},
+			planNodeKeys(t, plan),
+		)
+	}
 }
 
 func TestPlanRunGraphExecutesSharedDependenciesOnce(t *testing.T) {
@@ -491,7 +518,7 @@ func TestCollectionPlanDoesNotBatchStaticArtifacts(t *testing.T) {
 			{Field: "go"},
 			{Field: "engine"},
 		},
-		targetPatterns: []string{"go", "go:engine"},
+		targetPatterns: []string{"go:engine"},
 	})
 
 	plan, err := artifacts.Plan(VerbCheck, nil, nil)

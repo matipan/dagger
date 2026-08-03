@@ -235,6 +235,7 @@ func NewArtifactsFromTypeDefs(typeDefs dagql.ObjectResultArray[*TypeDef]) (*Arti
 			row.selectorPath,
 			row.coordinates,
 			nil,
+			nil,
 		); err != nil {
 			return nil, err
 		}
@@ -811,11 +812,29 @@ func artifactFieldCoordinate(object *ObjectTypeDef, field *FieldTypeDef) string 
 	return artifactCLIName(objectName) + ":" + strcase.ToKebab(field.Name)
 }
 
+func artifactFieldTargetPatterns(
+	parentPatterns []string,
+	object *ObjectTypeDef,
+	field string,
+) []string {
+	field = strcase.ToKebab(field)
+	patterns := make([]string, 0, len(parentPatterns)+1)
+	patterns = append(patterns, artifactTypeCLIName(object)+":"+field)
+	for _, parent := range parentPatterns {
+		pattern := parent + ":" + field
+		if !slices.Contains(patterns, pattern) {
+			patterns = append(patterns, pattern)
+		}
+	}
+	return patterns
+}
+
 func (artifacts *Artifacts) discoverStaticArtifactRows(
 	root *artifactRow,
 	object *ObjectTypeDef,
 	selectorPath []dagql.Selector,
 	coordinates []dagql.Nullable[dagql.String],
+	targetPatterns []string,
 	stack map[string]struct{},
 ) error {
 	if _, found := stack[object.Name]; found {
@@ -841,6 +860,11 @@ func (artifacts *Artifacts) discoverStaticArtifactRows(
 			continue
 		}
 		childPath := appendSelector(selectorPath, dagql.Selector{Field: field.Name})
+		childTargetPatterns := artifactFieldTargetPatterns(
+			targetPatterns,
+			object,
+			field.Name,
+		)
 		if isStaticArtifactField(childType) {
 			dimension := artifactTypeCLIName(childObject)
 			dimensionIndex, err := artifacts.dimensionIndex(dimension)
@@ -880,10 +904,7 @@ func (artifacts *Artifacts) discoverStaticArtifactRows(
 				rootType:         childObject.Name,
 				sourceModuleName: sourceModuleName,
 				selectorPath:     childPath,
-				targetPatterns: append(
-					slices.Clone(root.targetPatterns),
-					fieldCoordinate,
-				),
+				targetPatterns:   childTargetPatterns,
 			}
 			artifacts.rows = append(artifacts.rows, childRow)
 			if err := artifacts.discoverStaticArtifactRows(
@@ -891,6 +912,7 @@ func (artifacts *Artifacts) discoverStaticArtifactRows(
 				childObject,
 				childPath,
 				childCoordinates,
+				childTargetPatterns,
 				nil,
 			); err != nil {
 				return err
@@ -905,6 +927,7 @@ func (artifacts *Artifacts) discoverStaticArtifactRows(
 			childObject,
 			childPath,
 			coordinates,
+			childTargetPatterns,
 			stack,
 		); err != nil {
 			return err
@@ -928,11 +951,17 @@ func (artifacts *Artifacts) discoverStaticArtifactRows(
 		if childType.AsCollection.Valid || childObject.SourceModuleName == "" {
 			continue
 		}
+		childTargetPatterns := artifactFieldTargetPatterns(
+			targetPatterns,
+			object,
+			fn.Name,
+		)
 		if err := artifacts.discoverStaticArtifactRows(
 			root,
 			childObject,
 			appendSelector(selectorPath, dagql.Selector{Field: fn.Name}),
 			coordinates,
+			childTargetPatterns,
 			stack,
 		); err != nil {
 			return err
@@ -1192,7 +1221,6 @@ func (artifacts *Artifacts) discoverCollectionOccurrence(
 				rootType:             itemObject.Name,
 				sourceModuleName:     root.sourceModuleName,
 				selectorPath:         item.path,
-				targetPatterns:       slices.Clone(root.targetPatterns),
 				collectionPath:       cloneSelectors(collectionPath),
 				collectionKey:        item.key,
 				collectionKeyType:    collection.KeyType.Clone(),
@@ -1211,6 +1239,7 @@ func (artifacts *Artifacts) discoverCollectionOccurrence(
 				itemObject,
 				item.path,
 				item.coordinates,
+				nil,
 				nil,
 			); err != nil {
 				return err

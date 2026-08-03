@@ -757,6 +757,14 @@ func TestFilterPendingWorkspaceModulesForScopedRootFields(t *testing.T) {
 		require.Equal(t, []pendingModule{barBaz, entry}, selected)
 	})
 
+	t.Run("namespaced object target matches module", func(t *testing.T) {
+		t.Parallel()
+
+		selected, applied := filterPendingWorkspaceModulesForScopedRootFields(mods, nil, []string{"currentTypeDefs"}, "bar-baz-suite:verify", false)
+		require.True(t, applied)
+		require.Equal(t, []pendingModule{barBaz, entry}, selected)
+	})
+
 	t.Run("unknown token loads pending entrypoint alone", func(t *testing.T) {
 		t.Parallel()
 
@@ -895,6 +903,28 @@ func TestFilterPendingWorkspaceModulesBySelectorInclude(t *testing.T) {
 		// segment before ':' is the module name regardless of the item kind.
 		filtered := filterPendingWorkspaceModulesBySelectorInclude(mods, nil, []string{"rust-sdk:lint", "php-sdk:web"})
 		require.Equal(t, []pendingModule{mods[1], mods[2]}, filtered)
+	})
+
+	t.Run("namespaced object type selects its module", func(t *testing.T) {
+		t.Parallel()
+
+		filtered := filterPendingWorkspaceModulesBySelectorInclude(
+			mods,
+			nil,
+			[]string{"go-sdk-generator:generate", "php-sdk-service:web"},
+		)
+		require.Equal(t, []pendingModule{mods[0], mods[2]}, filtered)
+	})
+
+	t.Run("globbed type root loads every potentially matching module", func(t *testing.T) {
+		t.Parallel()
+
+		filtered := filterPendingWorkspaceModulesBySelectorInclude(
+			mods,
+			nil,
+			[]string{"go-sdk-*:generate"},
+		)
+		require.Equal(t, mods, filtered)
 	})
 
 	t.Run("bare module name selects only that module", func(t *testing.T) {

@@ -338,18 +338,18 @@ type with a `lint` check alongside its `test`, and let `GoTests.batch` define
 
 ```console
 $ dagger check -l
---go-module=./myapp/app2 --go-test=TestBar lint
---go-module=./myapp/app2 --go-test=TestBar test
---go-module=./myapp/app2 --go-test=TestFoo lint
---go-module=./myapp/app2 --go-test=TestFoo test
+--go-module=./myapp/app2 --go-test=TestBar go-test:lint
+--go-module=./myapp/app2 --go-test=TestBar go-test:test
+--go-module=./myapp/app2 --go-test=TestFoo go-test:lint
+--go-module=./myapp/app2 --go-test=TestFoo go-test:test
 
-$ dagger check --go-test=TestFoo --go-test=TestBar test
+$ dagger check --go-test=TestFoo --go-test=TestBar go-test:test
 # runs once via go.tests.batch.test over the filtered subset
 
-$ dagger check --go-test=TestFoo test
+$ dagger check --go-test=TestFoo go-test:test
 # runs TestFoo.test directly
 
-$ dagger check --go-test=TestFoo --go-test=TestBar lint
+$ dagger check --go-test=TestFoo --go-test=TestBar go-test:lint
 # runs once per filtered item via the item type's lint
 ```
 

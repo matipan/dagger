@@ -274,7 +274,7 @@ func (ElixirSuite) TestCheck(ctx context.Context, t *testctx.T) {
 		c := connect(ctx, t)
 
 		out, err := elixirModule(t, c, "hello-with-checks").
-			With(daggerExec("--progress=report", "check", "passing*")).
+			With(daggerExec("--progress=report", "check", "hello-with-checks:passing*")).
 			CombinedOutput(ctx)
 
 		require.NoError(t, err)
@@ -286,7 +286,7 @@ func (ElixirSuite) TestCheck(ctx context.Context, t *testctx.T) {
 		c := connect(ctx, t)
 
 		out, err := elixirModule(t, c, "hello-with-checks").
-			With(daggerExecFail("--progress=report", "check", "failing*")).
+			With(daggerExecFail("--progress=report", "check", "hello-with-checks:failing*")).
 			CombinedOutput(ctx)
 
 		require.NoError(t, err)

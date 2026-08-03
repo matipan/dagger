@@ -44,7 +44,7 @@ Examples:
   dagger check                    # Run all checks
   dagger check -l                 # List all available checks
   dagger check go:lint            # Run the go:lint check
-  dagger check --type=go lint     # Filter artifacts, then run lint
+  dagger check --type=go go:lint  # Filter artifacts, then run go:lint
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		artifactArgs, needsHelp, err := prepareExecutionPlanCommand(cmd, args)
@@ -54,6 +54,8 @@ Examples:
 
 		params := initModuleParams(args)
 		params.EnableCloudScaleOut = enableScaleOut
+		params.WorkspaceModuleScope = executionPlanModuleScope(artifactArgs)
+		targets := executionPlanTargetPatterns(artifactArgs)
 		return withEngine(
 			cmd.Context(),
 			params,
@@ -61,7 +63,10 @@ Examples:
 				dag := engineClient.Dagger()
 				artifacts := dag.CurrentWorkspace().Artifacts()
 				materialized := artifacts.Materialize(
-					dagger.ArtifactsMaterializeOpts{BestEffort: needsHelp},
+					dagger.ArtifactsMaterializeOpts{
+						Include:    targets,
+						BestEffort: needsHelp,
+					},
 				)
 				materializedID, err := materialized.ID(ctx)
 				if err != nil {

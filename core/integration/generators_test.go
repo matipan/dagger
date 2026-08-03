@@ -65,7 +65,7 @@ func (GeneratorsSuite) TestGeneratorsDirectSDK(ctx context.Context, t *testctx.T
 				require.False(t, exists)
 
 				modGen = modGen.
-					With(daggerExec("generate", "generate-files", "-y", "--progress=plain"))
+					With(daggerExec("generate", tc.path+":generate-files", "-y", "--progress=plain"))
 				out, err := modGen.
 					CombinedOutput(ctx)
 				// require.ErrorContains(t, err, "plop")
@@ -88,7 +88,7 @@ func (GeneratorsSuite) TestGeneratorsDirectSDK(ctx context.Context, t *testctx.T
 				require.False(t, exists)
 
 				modGen = modGen.
-					With(daggerExec("generate", "generate-*", "-y", "--progress=plain"))
+					With(daggerExec("generate", tc.path+":generate-*", "-y", "--progress=plain"))
 				out, err := modGen.
 					CombinedOutput(ctx)
 				require.NoError(t, err)
@@ -104,7 +104,7 @@ func (GeneratorsSuite) TestGeneratorsDirectSDK(ctx context.Context, t *testctx.T
 
 			t.Run("empty changeset", func(ctx context.Context, t *testctx.T) {
 				out, err := modGen.
-					With(daggerExec("generate", "empty-changeset", "-y", "--progress=plain")).
+					With(daggerExec("generate", tc.path+":empty-changeset", "-y", "--progress=plain")).
 					CombinedOutput(ctx)
 				require.NoError(t, err)
 				require.Contains(t, out, "no changes to apply")
@@ -112,7 +112,7 @@ func (GeneratorsSuite) TestGeneratorsDirectSDK(ctx context.Context, t *testctx.T
 
 			t.Run("error", func(ctx context.Context, t *testctx.T) {
 				out, err := modGen.
-					WithExec([]string{"dagger", "generate", "changeset-failure", "-y", "--progress=plain"}, dagger.ContainerWithExecOpts{
+					WithExec([]string{"dagger", "generate", tc.path + ":changeset-failure", "-y", "--progress=plain"}, dagger.ContainerWithExecOpts{
 						Expect:                        dagger.ReturnTypeAny,
 						ExperimentalPrivilegedNesting: true,
 					}).
@@ -134,7 +134,7 @@ func (GeneratorsSuite) TestGenerateApplyDisposition(ctx context.Context, t *test
 	agent := modGen.WithEnvVariable("CODEX_CI", "1")
 
 	t.Run("agent requires an explicit choice before running", func(ctx context.Context, t *testctx.T) {
-		failed := agent.With(daggerExecFail("generate", "generate-files"))
+		failed := agent.With(daggerExecFail("generate", "hello-with-generators:generate-files"))
 		out, err := failed.CombinedOutput(ctx)
 		require.NoError(t, err, out)
 		require.Contains(t, out, "requires an explicit changeset choice")
@@ -155,7 +155,7 @@ func (GeneratorsSuite) TestGenerateApplyDisposition(ctx context.Context, t *test
 	})
 
 	t.Run("no apply previews without exporting", func(ctx context.Context, t *testctx.T) {
-		previewed := agent.With(daggerExec("generate", "generate-files", "--no-apply"))
+		previewed := agent.With(daggerExec("generate", "hello-with-generators:generate-files", "--no-apply"))
 		out, err := previewed.CombinedOutput(ctx)
 		require.NoError(t, err, out)
 		require.Contains(t, out, "foo")
@@ -167,7 +167,7 @@ func (GeneratorsSuite) TestGenerateApplyDisposition(ctx context.Context, t *test
 	})
 
 	t.Run("report mode cannot wait for confirmation", func(ctx context.Context, t *testctx.T) {
-		failed := modGen.With(daggerExecFail("generate", "generate-files", "--progress=report"))
+		failed := modGen.With(daggerExecFail("generate", "hello-with-generators:generate-files", "--progress=report"))
 		out, err := failed.CombinedOutput(ctx)
 		require.NoError(t, err, out)
 		require.Contains(t, out, "interactive prompts are unavailable in report mode")
@@ -194,7 +194,7 @@ func (GeneratorsSuite) TestGeneratorLazyExecFailureSurfacesStderr(ctx context.Co
 	modGen = modGen.WithWorkdir("hello-with-generators")
 
 	out, err := modGen.
-		WithExec([]string{"dagger", "generate", "lazy-exec-failure", "-y", "--progress=plain"}, dagger.ContainerWithExecOpts{
+		WithExec([]string{"dagger", "generate", "hello-with-generators:lazy-exec-failure", "-y", "--progress=plain"}, dagger.ContainerWithExecOpts{
 			Expect:                        dagger.ReturnTypeAny,
 			ExperimentalPrivilegedNesting: true,
 		}).
@@ -241,7 +241,7 @@ func (GeneratorsSuite) TestGeneratorsViaLegacyBlueprintConfig(ctx context.Contex
 				require.False(t, exists)
 
 				modGen = modGen.
-					With(daggerExec("generate", "generate-*", "-y", "--progress=plain"))
+					With(daggerExec("generate", "blueprint:generate-*", "-y", "--progress=plain"))
 				out, err := modGen.
 					CombinedOutput(ctx)
 				require.NoError(t, err)
@@ -508,7 +508,7 @@ func (GeneratorsSuite) TestWorkspaceGenerateNarrowsToRequestedModule(ctx context
 
 	t.Run("listing only the healthy module skips the broken one", func(ctx context.Context, t *testctx.T) {
 		out, err := base.
-			With(daggerExec("generate", "-l", "good")).
+			With(daggerExec("generate", "-l", "good:**")).
 			CombinedOutput(ctx)
 		require.NoError(t, err)
 		require.NotContains(t, out, "intentionally invalid")
@@ -519,7 +519,7 @@ func (GeneratorsSuite) TestWorkspaceGenerateNarrowsToRequestedModule(ctx context
 		// requests must keep recognizing the already-loaded module instead of
 		// falling back to loading everything.
 		out, err := base.
-			With(daggerExec("generate", "good", "-y", "--progress=plain")).
+			With(daggerExec("generate", "good:generate", "-y", "--progress=plain")).
 			CombinedOutput(ctx)
 		require.NoError(t, err)
 		require.NotContains(t, out, "no changes to apply")
@@ -574,7 +574,7 @@ func (GeneratorsSuite) TestWorkspaceGenerateNarrowsToRequestedModule(ctx context
 		// broken module no longer aborts by itself; --require-load is what turns
 		// its load failure into a hard error.
 		out, err := base.
-			With(daggerExecFail("generate", "bad", "--require-load")).
+			With(daggerExecFail("generate", "bad:**", "--require-load")).
 			CombinedOutput(ctx)
 		require.NoError(t, err)
 		require.Contains(t, out, "require-load")
@@ -593,7 +593,7 @@ func (GeneratorsSuite) TestWorkspaceCheckNarrowsToRequestedModule(ctx context.Co
 
 	t.Run("listing only the healthy module skips the broken one", func(ctx context.Context, t *testctx.T) {
 		out, err := base.
-			With(daggerExec("check", "-l", "good")).
+			With(daggerExec("check", "-l", "good:**")).
 			CombinedOutput(ctx)
 		require.NoError(t, err)
 		require.NotContains(t, out, "intentionally invalid")
@@ -605,7 +605,7 @@ func (GeneratorsSuite) TestWorkspaceCheckNarrowsToRequestedModule(ctx context.Co
 		// pending output (covered by the generate narrowing test), which is
 		// unrelated to whether the broken module was loaded.
 		out, err := base.
-			With(daggerExec("check", "good", "--no-generate", "--progress=plain")).
+			With(daggerExec("check", "good:verify", "--no-generate", "--progress=plain")).
 			CombinedOutput(ctx)
 		require.NoError(t, err)
 		require.NotContains(t, out, "intentionally invalid")
@@ -633,7 +633,7 @@ func (GeneratorsSuite) TestWorkspaceUpNarrowsToRequestedModule(ctx context.Conte
 
 	t.Run("listing only the healthy module skips the broken one", func(ctx context.Context, t *testctx.T) {
 		out, err := base.
-			With(daggerExec("up", "-l", "good")).
+			With(daggerExec("up", "-l", "good:web")).
 			CombinedOutput(ctx)
 		require.NoError(t, err)
 		require.NotContains(t, out, "intentionally invalid")
@@ -743,7 +743,7 @@ func (GeneratorsSuite) TestWorkspaceCallNarrowsByCliNameAndEntrypoint(ctx contex
 		// The selector resolvers (generate/check/up) match include patterns
 		// kebab-normalized; on-demand loading must normalize the same way.
 		out, err := base.
-			With(daggerExec("generate", "-l", "good-mod")).
+			With(daggerExec("generate", "-l", "good-mod:**")).
 			CombinedOutput(ctx)
 		require.NoError(t, err)
 		require.NotContains(t, out, "intentionally invalid")
@@ -778,7 +778,7 @@ func (GeneratorsSuite) TestWorkspaceGenerateSkip(ctx context.Context, t *testctx
 
 	ctr := modGen.WithNewFile("dagger.toml", `[modules.hello-with-generators]
 source = "hello-with-generators"
-generate.skip = ["generate-other-files", "other-generators:*"]
+generate.skip = ["hello-with-generators:generate-other-files", "hello-with-generators:other-generators:*"]
 `)
 
 	listOut, err := ctr.With(daggerExec("generate", "-l")).CombinedOutput(ctx)
@@ -819,7 +819,7 @@ func (GeneratorsSuite) TestGeneratePlanChangesDoNotRequireRun(ctx context.Contex
 		With(daggerQuery(`{
 			currentWorkspace {
 				artifacts {
-					plan(verb: GENERATE, include: ["generate-files"]) {
+					plan(verb: GENERATE, include: ["hello-with-generators:generate-files"]) {
 						changes { isEmpty }
 					}
 				}

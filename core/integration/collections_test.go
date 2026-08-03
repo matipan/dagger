@@ -203,7 +203,7 @@ type Tests @collection {
 				artifacts {
 					filterCoordinates(dimension: "type", values: ["go-test"]) {
 						filterCoordinates(dimension: "go-test", values: ["unit"]) {
-							plan(verb: CHECK, include: ["run"]) {
+							plan(verb: CHECK, include: ["go-test:run"]) {
 								nodes {
 									functionPath
 									collectionBatched
@@ -379,7 +379,7 @@ type Test {
 		out, err = nested.With(daggerExec("check", "-l")).Stdout(ctx)
 		require.NoError(t, err)
 		require.Equal(t, `# Empty target runs everything. Otherwise use:
---go-module=api --go-directory=api/auth --go-test=TestAuth execute
+--go-module=api --go-directory=api/auth --go-test=TestAuth go-test:execute
 `, out)
 	})
 

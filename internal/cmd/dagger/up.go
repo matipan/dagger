@@ -31,8 +31,8 @@ var upCmd = &cobra.Command{
 Examples:
   dagger up                       # Start all services
   dagger up -l                    # List all available services
-  dagger up web                   # Start only the 'web' service
-  dagger up --type=app web        # Filter artifacts, then start 'web'
+  dagger up app:web               # Start only the 'web' service
+  dagger up --type=app app:web    # Filter artifacts, then start 'web'
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		artifactArgs, needsHelp, err := prepareExecutionPlanCommand(cmd, args)
@@ -41,6 +41,7 @@ Examples:
 		}
 
 		params := initModuleParams(args)
+		params.WorkspaceModuleScope = executionPlanModuleScope(artifactArgs)
 		return withEngine(
 			cmd.Context(),
 			params,

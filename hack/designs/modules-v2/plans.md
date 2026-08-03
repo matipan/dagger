@@ -49,7 +49,8 @@ object-returning functions remain glue.
 """
 Engine-owned target syntax used to match artifact occurrences and lifecycle
 entrypoints.
-Examples: `verify`, `test-suite:verify`, `sdk-dev:go`, `foo:**:lint`.
+Every pattern is rooted at an installed, module-namespaced type.
+Examples: `e2e-test-suite:verify`, `e2e-sdk-dev:go`, `foo:**:lint`.
 """
 scalar TargetPattern
 
@@ -222,8 +223,11 @@ type Tests {
 ```
 
 the reachable check actions on `Go` are `["lint"]` and `["tests", "run-bun"]`.
-The artifact root name is not part of the path, so the normal form is
-`dagger check --type=go lint`, not `go:lint`.
+Those artifact-relative paths remain the `Action.functionPath` values. A
+`TargetPattern` adds a module-namespaced type root, so the corresponding CLI
+targets are `go:lint` and `go:tests:run-bun`. The intermediate type is also a
+valid root: if `Tests` belongs to module `go`, `go-tests:run-bun` selects the
+same nested action.
 
 ### Enumeration
 
@@ -235,7 +239,7 @@ exact `(verb, target, functionPath)`, `target.items` of length 1, and
 ```text
 workspace.artifacts
   .filterCoordinates("type", ["go-test"])
-  .plan(verb: CHECK, include: ["test"])
+  .plan(verb: CHECK, include: ["go-test:test"])
   .nodes
 ```
 
@@ -257,36 +261,44 @@ coordinate:
 ```console
 $ dagger check -l
 # Empty target runs everything. Otherwise use:
---e2e-test-suite=e2e:engine run
---e2e-test-suite=e2e:engine verify
---e2e-sdk-dev=e2e:sdksarm --e2e-test-suite=sdk-dev:go run
---e2e-sdk-dev=e2e:sdksarm --e2e-test-suite=sdk-dev:go verify
---e2e-test-suite=fluffy run
---e2e-test-suite=fluffy verify
+--e2e-test-suite=e2e:engine e2e-test-suite:run
+--e2e-test-suite=e2e:engine e2e-test-suite:verify
+--e2e-sdk-dev=e2e:sdksarm --e2e-test-suite=sdk-dev:go e2e-test-suite:run
+--e2e-sdk-dev=e2e:sdksarm --e2e-test-suite=sdk-dev:go e2e-test-suite:verify
+--e2e-test-suite=fluffy e2e-test-suite:run
+--e2e-test-suite=fluffy e2e-test-suite:verify
 ```
 
 Every non-comment line is accepted directly after `dagger check` or
 `dagger generate`. The listing intentionally omits aggregate forms such as a
-global `verify`, a partial `--e2e-test-suite=sdk-dev:go`, or a filter-only
-recipe. Those remain valid set-based operations and are documented by command
-help, but they do not identify one artifact/action pair. A complete recipe that
-still matches multiple artifact occurrences is omitted for the same reason.
+bare `e2e-test-suite:verify`, a partial `--e2e-test-suite=sdk-dev:go`, or a
+filter-only recipe. Those remain valid set-based operations and are documented
+by command help, but they do not identify one artifact/action pair. A complete
+recipe that still matches multiple artifact occurrences is omitted for the same
+reason.
 Recipes whose coordinates contain NUL are also omitted because NUL cannot be
 represented in a process argument.
 Recipes are ordered by filter count before lexical order so shallower artifact
 actions remain visible before more specific descendants.
 
 Positional targets lower directly into `plan(...)` as `TargetPattern`s. A
-pattern is matched against:
+pattern has the grammar
+`<module-namespaced-type>:<field>[:<field>...]`. Each field is selected from the
+type returned by the preceding segment. Patterns are matched against:
 
-- the action path, such as `verify`
-- the artifact type plus action, such as `e2e-test-suite:verify`
-- every inherited static occurrence target, such as `e2e:sdksarm` or
-  `sdk-dev:go`, with and without the action suffix
+- the artifact type plus action path, such as `e2e-test-suite:verify`
+- complete paths rooted at an ancestor type, such as
+  `e2e:sdksarm:go:verify`
+- relative paths rooted at an intermediate type, such as
+  `e2e-sdk-dev:go:verify`
 
-A literal occurrence target selects every action beneath it, preserving
-compatibility behavior such as `dagger check sdk-dev:go`. The engine, not the
-CLI, owns target parsing and matching.
+A literal field occurrence target selects every lifecycle action beneath it, so
+`dagger check e2e-sdk-dev:go` runs all checks on every static `SDKDev.go`
+occurrence. Bare action paths such as `verify` and bare types such as
+`e2e-test-suite` are invalid; an intentionally broad selection must remain
+type-rooted, for example `e2e-test-suite:**`. Collection keys never become path
+segments and remain coordinate filters. The engine, not the CLI, owns target
+validation and matching.
 
 ## Plan Construction
 
@@ -402,8 +414,8 @@ cancel remaining independent actions after the first failure.
   the single public choke point — exact entrypoint selection is not a separate
   filter API on `Artifacts`.
 - Function paths are artifact-relative and exact. `TargetPattern` is the
-  distinct engine-owned syntax that matches artifact occurrence lineage and
-  lifecycle action paths.
+  distinct engine-owned, type-rooted syntax that matches artifact occurrence
+  lineage and lifecycle action paths. Bare actions and bare types are invalid.
 - Entrypoint selectors select entrypoints only; dependencies are pulled in
   automatically and never filtered directly.
 - Batching is resolved at compile time; executors never infer it.
@@ -420,6 +432,6 @@ cancel remaining independent actions after the first failure.
   failure.
 - `dagger check -l` prints one canonical runnable recipe per concrete
   artifact/action pair, using the artifact's complete coordinate row. Aggregate
-  action targets, partial filters, filter-only recipes, and selectors shared by
-  multiple occurrences remain valid but are left to command help.
+  type-rooted targets, partial filters, filter-only recipes, and selectors
+  shared by multiple occurrences remain valid but are left to command help.
 - Replaces `CheckGroup`. Transition path: `CheckGroup` → Execution Plans.

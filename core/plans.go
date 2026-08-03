@@ -61,7 +61,7 @@ func (pattern TargetPattern) TypeName() string {
 }
 
 func (pattern TargetPattern) TypeDescription() string {
-	return "A glob pattern matching artifact fields or lifecycle action paths."
+	return "A type-rooted glob matching artifact fields or lifecycle action paths."
 }
 
 func (pattern TargetPattern) Type() *ast.Type {
@@ -81,9 +81,8 @@ func (TargetPattern) DecodeInput(value any) (dagql.Input, error) {
 	if !ok {
 		return nil, fmt.Errorf("cannot convert %T to TargetPattern", value)
 	}
-	normalized := normalizeTargetPattern(pattern)
-	if _, err := doublestar.PathMatch(normalized, "validate"); err != nil {
-		return nil, fmt.Errorf("invalid target pattern %q: %w", pattern, err)
+	if err := validateTargetPattern(TargetPattern(pattern)); err != nil {
+		return nil, err
 	}
 	return TargetPattern(pattern), nil
 }
@@ -100,6 +99,7 @@ type Action struct {
 	target               *Artifacts
 	functionPath         []string
 	apiPath              []string
+	targetPaths          []string
 	selectorPath         []dagql.Selector
 	rootField            string
 	sourceModuleName     string
@@ -122,6 +122,7 @@ func (action *Action) Clone() *Action {
 	cp.target = action.target.Clone()
 	cp.functionPath = slices.Clone(action.functionPath)
 	cp.apiPath = slices.Clone(action.apiPath)
+	cp.targetPaths = slices.Clone(action.targetPaths)
 	cp.selectorPath = cloneSelectors(action.selectorPath)
 	cp.afterIDs = slices.Clone(action.afterIDs)
 	cp.portMappings = slices.Clone(action.portMappings)
@@ -419,11 +420,12 @@ func (artifact *Artifact) discoverActions(
 	collectionBatched bool,
 ) ([]*Action, error) {
 	var actions []*Action
-	var walk func(*ObjectTypeDef, []string, []string, map[string]struct{}) error
+	var walk func(*ObjectTypeDef, []string, []string, []string, map[string]struct{}) error
 	walk = func(
 		object *ObjectTypeDef,
 		functionPath []string,
 		apiPath []string,
+		targetPaths []string,
 		stack map[string]struct{},
 	) error {
 		if _, found := stack[object.Name]; found {
@@ -455,10 +457,16 @@ func (artifact *Artifact) discoverActions(
 			if !found {
 				continue
 			}
+			nextTargetPaths := artifactFieldTargetPatterns(
+				targetPaths,
+				object,
+				field.Name,
+			)
 			if err := walk(
 				child,
 				appendPath(functionPath, strcase.ToKebab(field.Name)),
 				appendPath(apiPath, field.Name),
+				nextTargetPaths,
 				stack,
 			); err != nil {
 				return err
@@ -476,6 +484,11 @@ func (artifact *Artifact) discoverActions(
 			cliSegment := strcase.ToKebab(fn.Name)
 			nextFunctionPath := appendPath(functionPath, cliSegment)
 			nextAPIPath := appendPath(apiPath, fn.Name)
+			nextTargetPaths := artifactFieldTargetPatterns(
+				targetPaths,
+				object,
+				fn.Name,
+			)
 
 			for _, verb := range functionVerbs(fn) {
 				var action *Action
@@ -483,6 +496,7 @@ func (artifact *Artifact) discoverActions(
 					action = artifact.newBatchAction(verb, nextFunctionPath, nextAPIPath)
 				} else {
 					action = artifact.newAction(verb, nextFunctionPath, nextAPIPath)
+					action.targetPaths = slices.Clone(nextTargetPaths)
 				}
 				if allVerbs {
 					actions = append(actions, action)
@@ -511,14 +525,20 @@ func (artifact *Artifact) discoverActions(
 			if !found {
 				continue
 			}
-			if err := walk(child, nextFunctionPath, nextAPIPath, stack); err != nil {
+			if err := walk(
+				child,
+				nextFunctionPath,
+				nextAPIPath,
+				nextTargetPaths,
+				stack,
+			); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 
-	if err := walk(root, nil, nil, nil); err != nil {
+	if err := walk(root, nil, nil, nil, nil); err != nil {
 		return nil, err
 	}
 	return actions, nil
@@ -631,6 +651,18 @@ func (artifacts *Artifacts) PlanWithSourceExcludes(
 	exclude []TargetPattern,
 	sourceExcludes map[string][]TargetPattern,
 ) (*Plan, error) {
+	if err := validateTargetPatterns(include); err != nil {
+		return nil, err
+	}
+	if err := validateTargetPatterns(exclude); err != nil {
+		return nil, err
+	}
+	for _, patterns := range sourceExcludes {
+		if err := validateTargetPatterns(patterns); err != nil {
+			return nil, err
+		}
+	}
+
 	switch verb {
 	case VerbCheck, VerbGenerate, VerbUp:
 	default:
@@ -1623,6 +1655,38 @@ func normalizeTargetPattern(pattern string) string {
 	return strings.Join(segments, "/")
 }
 
+func validateTargetPatterns(patterns []TargetPattern) error {
+	for _, pattern := range patterns {
+		if err := validateTargetPattern(pattern); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateTargetPattern(pattern TargetPattern) error {
+	segments := strings.Split(string(pattern), ":")
+	if len(segments) < 2 {
+		return fmt.Errorf(
+			"invalid target pattern %q: expected <type>:<field>[:<field>...]",
+			pattern,
+		)
+	}
+	for _, segment := range segments {
+		if artifactCLIName(segment) == "" {
+			return fmt.Errorf(
+				"invalid target pattern %q: type and field segments must not be empty",
+				pattern,
+			)
+		}
+	}
+	normalized := normalizeTargetPattern(string(pattern))
+	if _, err := doublestar.PathMatch(normalized, "validate"); err != nil {
+		return fmt.Errorf("invalid target pattern %q: %w", pattern, err)
+	}
+	return nil
+}
+
 func matchesTargetPatterns(
 	action *Action,
 	patterns []TargetPattern,
@@ -1632,7 +1696,7 @@ func matchesTargetPatterns(
 		return emptyMatches
 	}
 	actionPath := strings.Join(action.functionPath, "/")
-	candidates := []string{actionPath}
+	var candidates []string
 	if action.target != nil && len(action.target.rows) == 1 {
 		row := action.target.rows[0]
 		if index, err := action.target.dimensionIndex(ArtifactTypeDimension); err == nil {
@@ -1641,7 +1705,6 @@ func matchesTargetPatterns(
 				actionType := coordinate.Value.String()
 				candidates = append(
 					candidates,
-					actionType,
 					actionType+"/"+actionPath,
 				)
 			}
@@ -1654,6 +1717,9 @@ func matchesTargetPatterns(
 				normalized+"/"+actionPath,
 			)
 		}
+	}
+	for _, target := range action.targetPaths {
+		candidates = append(candidates, normalizeTargetPattern(target))
 	}
 	for _, pattern := range patterns {
 		normalized := normalizeTargetPattern(string(pattern))

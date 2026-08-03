@@ -24,6 +24,7 @@ func (s *artifactsSchema) Install(srv *dagql.Server) {
 		dagql.Func("materialize", s.materialize).
 			Doc("Resolve this scope into a stable artifact snapshot.").
 			Args(
+				dagql.Arg("include").Doc("Load only workspace modules that can provide these type-rooted targets."),
 				dagql.Arg("bestEffort").Doc("Keep artifacts from modules that load successfully instead of failing on the first module load error."),
 			),
 		dagql.Func("filterDimension", s.filterDimension).
@@ -148,10 +149,11 @@ func (s *artifactsSchema) materialize(
 	ctx context.Context,
 	artifacts *core.Artifacts,
 	args struct {
-		BestEffort bool `default:"false"`
+		Include    []core.TargetPattern `default:"[]"`
+		BestEffort bool                 `default:"false"`
 	},
 ) (*core.Artifacts, error) {
-	materialized, _, err := materializeArtifacts(ctx, artifacts, nil, args.BestEffort)
+	materialized, _, err := materializeArtifacts(ctx, artifacts, args.Include, args.BestEffort)
 	return materialized, err
 }
 

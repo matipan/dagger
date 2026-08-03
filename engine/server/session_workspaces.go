@@ -1250,16 +1250,34 @@ func knownWorkspaceModuleNames(mods []pendingModule, served map[string]struct{})
 	return known
 }
 
-// resolveIncludePatternModules maps each pattern's leading segment (before ':')
-// to a known module name. It returns the demanded names and whether any pattern
-// matched nothing known; the caller decides the fallback.
+func workspaceModuleForTypeRoot(known map[string]struct{}, typeRoot string) string {
+	typeRoot = canonicalWorkspaceModuleName(typeRoot)
+	if strings.ContainsAny(typeRoot, `*?[\`) {
+		return ""
+	}
+	moduleName := ""
+	for candidate := range known {
+		if typeRoot != candidate && !strings.HasPrefix(typeRoot, candidate+"-") {
+			continue
+		}
+		if len(candidate) > len(moduleName) {
+			moduleName = candidate
+		}
+	}
+	return moduleName
+}
+
+// resolveIncludePatternModules maps each pattern's type-root segment to its
+// module namespace. Main object types equal the module name; additional object
+// types start with "<module>-". Prefer the longest namespace when module names
+// overlap.
 func resolveIncludePatternModules(mods []pendingModule, served map[string]struct{}, include []string) (wanted map[string]struct{}, unknown bool) {
 	known := knownWorkspaceModuleNames(mods, served)
 	wanted = make(map[string]struct{}, len(include))
 	for _, pattern := range include {
-		modName, _, _ := strings.Cut(pattern, ":")
-		modName = canonicalWorkspaceModuleName(modName)
-		if _, ok := known[modName]; !ok {
+		typeRoot, _, _ := strings.Cut(pattern, ":")
+		modName := workspaceModuleForTypeRoot(known, typeRoot)
+		if modName == "" {
 			unknown = true
 			continue
 		}
@@ -1269,10 +1287,9 @@ func resolveIncludePatternModules(mods []pendingModule, served map[string]struct
 }
 
 // filterPendingWorkspaceModulesBySelectorInclude selects the modules named by
-// `dagger generate`/`check`/`up` patterns ("module" or "module:item"). A
-// pattern naming no known module (an entrypoint-proxied item, or a typo)
-// selects all, so the usual error surfaces. served modules are recognized but
-// contribute nothing to load.
+// artifact type filters or type-rooted `dagger generate`/`check`/`up` target
+// patterns. A pattern naming no known module selects all, so the usual error
+// surfaces. Served modules are recognized but contribute nothing to load.
 func filterPendingWorkspaceModulesBySelectorInclude(mods []pendingModule, served map[string]struct{}, include []string) []pendingModule {
 	if len(mods) == 0 || len(include) == 0 {
 		return mods
@@ -1396,15 +1413,17 @@ func filterPendingWorkspaceModulesForScopedRootFields(mods []pendingModule, serv
 }
 
 // resolveWorkspaceModuleScope maps the scope token to the pending modules it
-// demands: the named module plus the pending entrypoint module(s) -- the token
-// may be one of their root-proxied functions, and the command tree wants their
-// Query-root proxies either way. A token naming nothing known demands the
-// entrypoint alone when one is pending, or nothing when it is already served;
-// with no entrypoint to resolve it, everything loads (conservative: the token
-// could be anything).
+// demands: the named module plus the pending entrypoint module(s). The token
+// may be a module name, one of its root-proxied functions, or a type-rooted
+// execution-plan target. A token naming nothing known demands the entrypoint
+// alone when one is pending, or nothing when it is already served; with no
+// entrypoint to resolve it, everything loads (conservative: the token could be
+// anything).
 func resolveWorkspaceModuleScope(mods []pendingModule, served map[string]struct{}, scope string, entrypointServed bool) []pendingModule {
-	scopeName := canonicalWorkspaceModuleName(scope)
-	_, isModule := knownWorkspaceModuleNames(mods, served)[scopeName]
+	known := knownWorkspaceModuleNames(mods, served)
+	typeRoot, _, _ := strings.Cut(scope, ":")
+	scopeName := workspaceModuleForTypeRoot(known, typeRoot)
+	isModule := scopeName != ""
 
 	selected := make([]pendingModule, 0, len(mods))
 	for _, mod := range mods {

@@ -147,6 +147,43 @@ func parseExecutionPlanArgs(
 	return artifacts, include, nil
 }
 
+func executionPlanModuleScope(args []string) string {
+	var typeRoot string
+	for _, target := range executionPlanTargetPatterns(args) {
+		candidate, fieldPath, found := strings.Cut(string(target), ":")
+		if !found || candidate == "" || fieldPath == "" {
+			continue
+		}
+		if strings.ContainsAny(candidate, `*?[\`) {
+			return ""
+		}
+		if typeRoot != "" && typeRoot != candidate {
+			return ""
+		}
+		typeRoot = candidate
+	}
+	return typeRoot
+}
+
+func executionPlanTargetPatterns(args []string) []dagger.TargetPattern {
+	var targets []dagger.TargetPattern
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if strings.HasPrefix(arg, "-") {
+			if !strings.Contains(arg, "=") {
+				// Dynamic filter flags are not registered until artifact
+				// dimensions are loaded. This may be either a valued filter or a
+				// boolean collection alias, so guessing could mistake a target
+				// for a value and under-load a multi-module request.
+				return nil
+			}
+			continue
+		}
+		targets = append(targets, dagger.TargetPattern(arg))
+	}
+	return targets
+}
+
 func printExecutionPlan(
 	ctx context.Context,
 	cmd *cobra.Command,
@@ -329,7 +366,11 @@ func executionPlanRecipes(
 		if !representable || len(filters) == 0 {
 			continue
 		}
-		recipe := strings.Join(append(filters, row.action), " ")
+		if typeDimension < 0 || !row.hasCoordinate(typeDimension) {
+			continue
+		}
+		target := row.coordinates[typeDimension] + ":" + row.action
+		recipe := strings.Join(append(filters, target), " ")
 		candidate := recipes[recipe]
 		candidate.filterCount = len(filters)
 		candidate.occurrences++

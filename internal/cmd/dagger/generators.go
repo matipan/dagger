@@ -39,7 +39,7 @@ Examples:
   dagger generate                            # Generate all assets
   dagger generate -l                         # List all available generators
   dagger generate go:bin                     # Generate one selected asset
-  dagger generate --type=go bin              # Filter artifacts, then generate bin
+  dagger generate --type=go go:bin           # Filter artifacts, then generate bin
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		artifactArgs, needsHelp, err := prepareExecutionPlanCommand(cmd, args)
@@ -60,6 +60,7 @@ Examples:
 		}
 
 		params := initModuleParams(args)
+		params.WorkspaceModuleScope = executionPlanModuleScope(artifactArgs)
 		return withEngine(
 			cmd.Context(),
 			params,

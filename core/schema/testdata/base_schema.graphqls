@@ -225,6 +225,11 @@ type Artifacts implements Node {
   """Resolve this scope into a stable artifact snapshot."""
   materialize(
     """
+    Load only workspace modules that can provide these type-rooted targets.
+    """
+    include: [TargetPattern!] = []
+
+    """
     Keep artifacts from modules that load successfully instead of failing on the first module load error.
     """
     bestEffort: Boolean = false
@@ -5601,7 +5606,7 @@ interface Syncer implements Node {
 """A unique identifier for an object."""
 scalar SyncerID
 
-"""A glob pattern matching artifact fields or lifecycle action paths."""
+"""A type-rooted glob matching artifact fields or lifecycle action paths."""
 scalar TargetPattern
 
 """An interactive terminal that clients can connect to."""

@@ -174,7 +174,17 @@ func artifactActionCheckCommand(span *dagui.Span) string {
 		return ""
 	}
 	args, _ := span.ArtifactActionTargetArgs(true)
-	if action := span.ArtifactActionName(); action != "" {
+	action := span.ArtifactActionName()
+	for index, dimension := range span.ArtifactActionCommonDimensions {
+		if dimension != "type" ||
+			index >= len(span.ArtifactActionCommonCoordinates) ||
+			action == "" {
+			continue
+		}
+		action = span.ArtifactActionCommonCoordinates[index] + ":" + action
+		break
+	}
+	if action != "" {
 		args = append(args, action)
 	}
 	quoted := quoteArtifactActionArgs(args)
