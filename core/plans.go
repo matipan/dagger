@@ -95,18 +95,18 @@ var _ dagql.ScalarType = TargetPattern("")
 
 // Action is one exact invocation on an artifact target.
 type Action struct {
-	verb                 Verb
-	target               *Artifacts
-	functionPath         []string
-	apiPath              []string
-	targetPaths          []string
-	selectorPath         []dagql.Selector
-	rootField            string
-	sourceModuleName     string
-	collectionBatched    bool
-	collectionOccurrence string
-	afterIDs             []dagql.ID[*Action]
-	portMappings         []PortForward
+	verb              Verb
+	target            *Artifacts
+	functionPath      []string
+	apiPath           []string
+	targetPaths       []string
+	selectorPath      []dagql.Selector
+	rootField         string
+	sourceModuleName  string
+	collectionBatched bool
+	batchOrigin       *artifactCollectionOrigin
+	afterIDs          []dagql.ID[*Action]
+	portMappings      []PortForward
 }
 
 func (*Action) Type() *ast.Type {
@@ -124,6 +124,10 @@ func (action *Action) Clone() *Action {
 	cp.apiPath = slices.Clone(action.apiPath)
 	cp.targetPaths = slices.Clone(action.targetPaths)
 	cp.selectorPath = cloneSelectors(action.selectorPath)
+	if action.batchOrigin != nil {
+		origin := action.batchOrigin.Clone()
+		cp.batchOrigin = &origin
+	}
 	cp.afterIDs = slices.Clone(action.afterIDs)
 	cp.portMappings = slices.Clone(action.portMappings)
 	return &cp
@@ -209,7 +213,7 @@ func (action *Action) artifactTargetTelemetry() artifactTargetTelemetry {
 		canonicalRows = append(canonicalRows, strings.Join([]string{
 			strings.Join(canonicalCoordinates, "\x00"),
 			selectorPathString(row.selectorPath),
-			row.collectionOccurrence,
+			artifactRowCollectionOccurrence(row),
 		}, "\x01"))
 	}
 	sort.Strings(canonicalRows)
@@ -253,12 +257,14 @@ func (action *Action) telemetryAttributes() []attribute.KeyValue {
 	actionIdentity, _ := json.Marshal(struct {
 		Verb              Verb
 		FunctionPath      []string
+		Implementation    string
 		SourceModule      string
 		CollectionBatched bool
 		TargetDigest      string
 	}{
 		Verb:              action.verb,
 		FunctionPath:      action.functionPath,
+		Implementation:    action.implementationIdentity(),
 		SourceModule:      action.sourceModuleName,
 		CollectionBatched: action.collectionBatched,
 		TargetDigest:      target.digest,
@@ -277,6 +283,18 @@ func (action *Action) telemetryAttributes() []attribute.KeyValue {
 			telemetryattrs.ArtifactActionSourceModuleAttr,
 			action.sourceModuleName,
 		))
+	}
+	if action.batchOrigin != nil {
+		attrs = append(attrs,
+			attribute.String(
+				telemetryattrs.ArtifactActionBatchTypeAttr,
+				action.batchOrigin.typeName,
+			),
+			attribute.Int(
+				telemetryattrs.ArtifactActionBatchDepthAttr,
+				action.batchDepth(),
+			),
+		)
 	}
 	if len(target.commonDimensions) > 0 {
 		attrs = append(attrs,
@@ -309,6 +327,19 @@ func (action *Action) telemetryAttributes() []attribute.KeyValue {
 		))
 	}
 	return attrs
+}
+
+func (action *Action) batchDepth() int {
+	if action == nil || action.batchOrigin == nil || action.target == nil || len(action.target.rows) == 0 {
+		return 0
+	}
+	lineage := action.target.rows[0].collectionLineage
+	for i := range lineage {
+		if lineage[i].occurrence == action.batchOrigin.occurrence {
+			return len(lineage) - i
+		}
+	}
+	return 0
 }
 
 func (plan *Plan) recordTelemetry(ctx context.Context) {
@@ -400,7 +431,7 @@ func (artifact *Artifact) Actions(verbs []Verb) ([]*Action, error) {
 		return nil, fmt.Errorf("artifact root type %q not found", artifact.rootType)
 	}
 
-	actions, err := artifact.discoverActions(root, selected, allVerbs, false)
+	actions, err := artifact.discoverActions(root, selected, allVerbs, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -417,7 +448,7 @@ func (artifact *Artifact) discoverActions(
 	root *ObjectTypeDef,
 	selected map[Verb]struct{},
 	allVerbs bool,
-	collectionBatched bool,
+	batchOrigin *artifactCollectionOrigin,
 ) ([]*Action, error) {
 	var actions []*Action
 	var walk func(*ObjectTypeDef, []string, []string, []string, map[string]struct{}) error
@@ -492,8 +523,8 @@ func (artifact *Artifact) discoverActions(
 
 			for _, verb := range functionVerbs(fn) {
 				var action *Action
-				if collectionBatched {
-					action = artifact.newBatchAction(verb, nextFunctionPath, nextAPIPath)
+				if batchOrigin != nil {
+					action = artifact.newBatchAction(*batchOrigin, verb, nextFunctionPath, nextAPIPath)
 				} else {
 					action = artifact.newAction(verb, nextFunctionPath, nextAPIPath)
 					action.targetPaths = slices.Clone(nextTargetPaths)
@@ -565,24 +596,29 @@ func (artifact *Artifact) Action(verb Verb, functionPath []string) (*Action, err
 
 func (artifact *Artifact) newAction(verb Verb, functionPath, apiPath []string) *Action {
 	return &Action{
-		verb:                 verb,
-		target:               artifact.targetScope(),
-		functionPath:         slices.Clone(functionPath),
-		apiPath:              slices.Clone(apiPath),
-		selectorPath:         cloneSelectors(artifact.selectorPath),
-		rootField:            artifact.rootField,
-		sourceModuleName:     artifact.sourceModuleName,
-		collectionOccurrence: artifact.collectionOccurrence,
+		verb:             verb,
+		target:           artifact.targetScope(),
+		functionPath:     slices.Clone(functionPath),
+		apiPath:          slices.Clone(apiPath),
+		selectorPath:     cloneSelectors(artifact.selectorPath),
+		rootField:        artifact.rootField,
+		sourceModuleName: artifact.sourceModuleName,
 	}
 }
 
-func (artifact *Artifact) newBatchAction(verb Verb, functionPath, apiPath []string) *Action {
+func (artifact *Artifact) newBatchAction(
+	origin artifactCollectionOrigin,
+	verb Verb,
+	functionPath, apiPath []string,
+) *Action {
 	action := artifact.newAction(verb, functionPath, apiPath)
 	action.collectionBatched = true
+	clonedOrigin := origin.Clone()
+	action.batchOrigin = &clonedOrigin
 	action.selectorPath = collectionBatchSelectorPath(
-		artifact.collectionPath,
-		artifact.collectionKeyType,
-		[]dagql.Input{artifact.collectionKey},
+		origin.path,
+		origin.keyType,
+		[]dagql.Input{origin.key},
 	)
 	return action
 }
@@ -592,10 +628,11 @@ func (artifact *Artifact) planActions(verb Verb) ([]*Action, error) {
 	if err != nil {
 		return nil, err
 	}
-	if artifact.collectionBatchType == "" {
+	origin := artifact.immediateCollectionOrigin()
+	if origin == nil || origin.batchType == "" {
 		return itemActions, nil
 	}
-	batch, found := artifact.scope.objects[artifact.collectionBatchType]
+	batch, found := artifact.scope.objects[origin.batchType]
 	if !found {
 		return itemActions, nil
 	}
@@ -603,7 +640,7 @@ func (artifact *Artifact) planActions(verb Verb) ([]*Action, error) {
 		batch,
 		map[Verb]struct{}{verb: {}},
 		false,
-		true,
+		origin,
 	)
 	if err != nil {
 		return nil, err
@@ -615,6 +652,35 @@ func (artifact *Artifact) planActions(verb Verb) ([]*Action, error) {
 		itemActions = append(itemActions, batchAction)
 	}
 	return itemActions, nil
+}
+
+func (artifact *Artifact) batchAction(
+	origin artifactCollectionOrigin,
+	verb Verb,
+	functionPath []string,
+) (*Action, error) {
+	if origin.batchType == "" {
+		return nil, nil
+	}
+	batch, found := artifact.scope.objects[origin.batchType]
+	if !found {
+		return nil, nil
+	}
+	actions, err := artifact.discoverActions(
+		batch,
+		map[Verb]struct{}{verb: {}},
+		false,
+		&origin,
+	)
+	if err != nil {
+		return nil, err
+	}
+	for _, action := range actions {
+		if slices.Equal(action.functionPath, functionPath) {
+			return action, nil
+		}
+	}
+	return nil, nil
 }
 
 func collectionBatchSelectorPath(
@@ -692,9 +758,11 @@ func (artifacts *Artifacts) PlanWithSourceExcludes(
 			if action.collectionBatched {
 				existingIndex := slices.IndexFunc(nodes, func(existing *Action) bool {
 					return existing.collectionBatched &&
+						existing.batchOrigin != nil &&
+						action.batchOrigin != nil &&
 						existing.verb == action.verb &&
 						existing.sourceModuleName == action.sourceModuleName &&
-						existing.collectionOccurrence == action.collectionOccurrence &&
+						existing.batchOrigin.occurrence == action.batchOrigin.occurrence &&
 						slices.Equal(existing.functionPath, action.functionPath)
 				})
 				if existingIndex >= 0 {
@@ -711,6 +779,10 @@ func (artifacts *Artifacts) PlanWithSourceExcludes(
 		}
 	}
 	if err := resolveSingletonCollectionBatches(nodes); err != nil {
+		return nil, err
+	}
+	nodes, err := resolveRecursiveCollectionBatches(artifacts, nodes)
+	if err != nil {
 		return nil, err
 	}
 
@@ -761,16 +833,311 @@ func mergeCollectionBatchAction(target, additional *Action) {
 		target.target.rows = append(target.target.rows, additionalRow.Clone())
 	}
 
-	first := target.target.rows[0]
+	if target.batchOrigin == nil {
+		return
+	}
 	keys := make([]dagql.Input, 0, len(target.target.rows))
 	for _, row := range target.target.rows {
-		keys = append(keys, row.collectionKey)
+		origin := artifactRowCollectionOrigin(row, target.batchOrigin.occurrence)
+		if origin != nil {
+			keys = append(keys, origin.key)
+		}
 	}
 	target.selectorPath = collectionBatchSelectorPath(
-		first.collectionPath,
-		first.collectionKeyType,
+		target.batchOrigin.path,
+		target.batchOrigin.keyType,
 		keys,
 	)
+}
+
+type recursiveBatchGroupKey struct {
+	verb         Verb
+	sourceModule string
+	rootType     string
+	functionPath string
+	occurrence   string
+	batchType    string
+}
+
+type recursiveBatchItem struct {
+	origin       artifactCollectionOrigin
+	nodeIndexes  map[int]struct{}
+	selectedRows map[string]struct{}
+}
+
+type recursiveBatchGroup struct {
+	key          recursiveBatchGroupKey
+	functionPath []string
+	items        map[string]*recursiveBatchItem
+}
+
+// Immediate collection batching has already run. Walk the remaining collection
+// lineage from the inside out and replace complete item subtrees only when the
+// outer handler reduces the number of actions.
+func resolveRecursiveCollectionBatches(
+	artifacts *Artifacts,
+	nodes []*Action,
+) ([]*Action, error) {
+	maxLineage := 0
+	for _, node := range nodes {
+		for _, row := range node.target.rows {
+			maxLineage = max(maxLineage, len(row.collectionLineage))
+		}
+	}
+	for depth := maxLineage - 2; depth >= 0; depth-- {
+		var err error
+		nodes, err = resolveRecursiveCollectionBatchDepth(artifacts, nodes, depth)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return nodes, nil
+}
+
+func resolveRecursiveCollectionBatchDepth(
+	artifacts *Artifacts,
+	nodes []*Action,
+	depth int,
+) ([]*Action, error) {
+	groups := map[recursiveBatchGroupKey]*recursiveBatchGroup{}
+	for nodeIndex, node := range nodes {
+		origin, rootType, keyID, ok, err := recursiveBatchNodeOrigin(node, depth)
+		if err != nil {
+			return nil, err
+		}
+		if !ok || origin.batchType == "" {
+			continue
+		}
+		groupKey := recursiveBatchGroupKey{
+			verb:         node.verb,
+			sourceModule: node.sourceModuleName,
+			rootType:     rootType,
+			functionPath: strings.Join(node.functionPath, "\x00"),
+			occurrence:   origin.occurrence,
+			batchType:    origin.batchType,
+		}
+		group := groups[groupKey]
+		if group == nil {
+			group = &recursiveBatchGroup{
+				key:          groupKey,
+				functionPath: slices.Clone(node.functionPath),
+				items:        map[string]*recursiveBatchItem{},
+			}
+			groups[groupKey] = group
+		}
+		item := group.items[keyID]
+		if item == nil {
+			item = &recursiveBatchItem{
+				origin:       origin.Clone(),
+				nodeIndexes:  map[int]struct{}{},
+				selectedRows: map[string]struct{}{},
+			}
+			group.items[keyID] = item
+		}
+		item.nodeIndexes[nodeIndex] = struct{}{}
+		for _, row := range node.target.rows {
+			item.selectedRows[artifactRowPlanIdentity(row)] = struct{}{}
+		}
+	}
+
+	groupKeys := make([]recursiveBatchGroupKey, 0, len(groups))
+	for key := range groups {
+		groupKeys = append(groupKeys, key)
+	}
+	sort.Slice(groupKeys, func(i, j int) bool {
+		left, right := groupKeys[i], groupKeys[j]
+		return strings.Join([]string{
+			string(left.verb), left.sourceModule, left.rootType,
+			left.functionPath, left.occurrence, left.batchType,
+		}, "\x00") < strings.Join([]string{
+			string(right.verb), right.sourceModule, right.rootType,
+			right.functionPath, right.occurrence, right.batchType,
+		}, "\x00")
+	})
+
+	removed := make(map[int]struct{})
+	var replacements []*Action
+	for _, groupKey := range groupKeys {
+		group := groups[groupKey]
+		itemKeys := make([]string, 0, len(group.items))
+		for key := range group.items {
+			itemKeys = append(itemKeys, key)
+		}
+		sort.Strings(itemKeys)
+
+		var eligible []*recursiveBatchItem
+		covered := map[int]struct{}{}
+		for _, key := range itemKeys {
+			item := group.items[key]
+			if !recursiveBatchItemComplete(artifacts, group.key, item, depth) {
+				continue
+			}
+			eligible = append(eligible, item)
+			for nodeIndex := range item.nodeIndexes {
+				covered[nodeIndex] = struct{}{}
+			}
+		}
+		if len(covered) <= 1 {
+			continue
+		}
+
+		coveredIndexes := make([]int, 0, len(covered))
+		for nodeIndex := range covered {
+			if _, alreadyRemoved := removed[nodeIndex]; alreadyRemoved {
+				continue
+			}
+			coveredIndexes = append(coveredIndexes, nodeIndex)
+		}
+		if len(coveredIndexes) <= 1 {
+			continue
+		}
+		sort.Ints(coveredIndexes)
+
+		firstNode := nodes[coveredIndexes[0]]
+		firstRow := firstNode.target.rows[0]
+		origin := eligible[0].origin
+		artifact := artifacts.artifactForRow(firstRow)
+		batchAction, err := artifact.batchAction(
+			origin,
+			group.key.verb,
+			group.functionPath,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if batchAction == nil {
+			continue
+		}
+
+		batchAction.target = firstNode.target.Clone()
+		batchAction.target.rows = nil
+		var afterIDs []dagql.ID[*Action]
+		for _, nodeIndex := range coveredIndexes {
+			for _, row := range nodes[nodeIndex].target.rows {
+				if slices.ContainsFunc(batchAction.target.rows, func(existing *artifactRow) bool {
+					return artifactRowsEqual(existing, row)
+				}) {
+					continue
+				}
+				batchAction.target.rows = append(batchAction.target.rows, row.Clone())
+			}
+			afterIDs = append(afterIDs, nodes[nodeIndex].afterIDs...)
+			removed[nodeIndex] = struct{}{}
+		}
+		sort.SliceStable(batchAction.target.rows, func(i, j int) bool {
+			return compareCoordinateRows(
+				batchAction.target.rows[i].coordinates,
+				batchAction.target.rows[j].coordinates,
+			) < 0
+		})
+		keys := make([]dagql.Input, len(eligible))
+		for i, item := range eligible {
+			keys[i] = item.origin.key
+		}
+		batchAction.selectorPath = collectionBatchSelectorPath(
+			origin.path,
+			origin.keyType,
+			keys,
+		)
+		batchAction = batchAction.WithAfter(afterIDs)
+		replacements = append(replacements, batchAction)
+	}
+
+	if len(replacements) == 0 {
+		return nodes, nil
+	}
+	resolved := make([]*Action, 0, len(nodes)-len(removed)+len(replacements))
+	for nodeIndex, node := range nodes {
+		if _, found := removed[nodeIndex]; !found {
+			resolved = append(resolved, node)
+		}
+	}
+	return append(resolved, replacements...), nil
+}
+
+func recursiveBatchNodeOrigin(
+	node *Action,
+	depth int,
+) (artifactCollectionOrigin, string, string, bool, error) {
+	if node == nil || node.target == nil || len(node.target.rows) == 0 {
+		return artifactCollectionOrigin{}, "", "", false, nil
+	}
+	first := node.target.rows[0]
+	if len(first.collectionLineage) <= depth+1 {
+		return artifactCollectionOrigin{}, "", "", false, nil
+	}
+	origin := first.collectionLineage[depth]
+	keyID, err := collectionKeyID(origin.key)
+	if err != nil {
+		return artifactCollectionOrigin{}, "", "", false, err
+	}
+	for _, row := range node.target.rows[1:] {
+		if row.rootType != first.rootType || len(row.collectionLineage) <= depth+1 {
+			return artifactCollectionOrigin{}, "", "", false, nil
+		}
+		candidate := row.collectionLineage[depth]
+		candidateKeyID, err := collectionKeyID(candidate.key)
+		if err != nil {
+			return artifactCollectionOrigin{}, "", "", false, err
+		}
+		if candidate.occurrence != origin.occurrence || candidateKeyID != keyID {
+			return artifactCollectionOrigin{}, "", "", false, nil
+		}
+	}
+	return origin.Clone(), first.rootType, keyID, true, nil
+}
+
+func recursiveBatchItemComplete(
+	artifacts *Artifacts,
+	group recursiveBatchGroupKey,
+	item *recursiveBatchItem,
+	depth int,
+) bool {
+	rows := artifacts.allRows
+	if len(rows) == 0 {
+		rows = artifacts.rows
+	}
+	expected := map[string]struct{}{}
+	wantedKey, err := collectionKeyID(item.origin.key)
+	if err != nil {
+		return false
+	}
+	for _, row := range rows {
+		if row.rootType != group.rootType || len(row.collectionLineage) <= depth+1 {
+			continue
+		}
+		origin := row.collectionLineage[depth]
+		if origin.occurrence != group.occurrence {
+			continue
+		}
+		keyID, err := collectionKeyID(origin.key)
+		if err != nil || keyID != wantedKey {
+			continue
+		}
+		expected[artifactRowPlanIdentity(row)] = struct{}{}
+	}
+	if len(expected) == 0 || len(expected) != len(item.selectedRows) {
+		return false
+	}
+	for rowID := range expected {
+		if _, found := item.selectedRows[rowID]; !found {
+			return false
+		}
+	}
+	return true
+}
+
+func artifactRowPlanIdentity(row *artifactRow) string {
+	if row == nil {
+		return ""
+	}
+	coordinates := make([]string, len(row.coordinates))
+	for i, coordinate := range row.coordinates {
+		if coordinate.Valid {
+			coordinates[i] = "1" + coordinate.Value.String()
+		}
+	}
+	return strings.Join(coordinates, "\x00") + "\x01" + selectorPathString(row.selectorPath)
 }
 
 func (action *Action) Run(ctx context.Context) error {
@@ -1156,9 +1523,16 @@ func actionsEqual(left, right *Action) bool {
 	return left != nil &&
 		right != nil &&
 		left.verb == right.verb &&
-		left.collectionBatched == right.collectionBatched &&
 		slices.Equal(left.functionPath, right.functionPath) &&
+		left.implementationIdentity() == right.implementationIdentity() &&
 		artifactScopesEqual(left.target, right.target)
+}
+
+func (action *Action) implementationIdentity() string {
+	if action == nil {
+		return ""
+	}
+	return selectorPathString(action.selectorPath) + "\x00" + strings.Join(action.apiPath, "\x00")
 }
 
 func artifactScopesEqual(left, right *Artifacts) bool {

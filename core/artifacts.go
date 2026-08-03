@@ -21,6 +21,7 @@ const ArtifactTypeDimension = "type"
 type Artifacts struct {
 	dimensions    []*ArtifactDimension
 	rows          []*artifactRow
+	allRows       []*artifactRow
 	objects       map[string]*ObjectTypeDef
 	typeDefs      map[string]*TypeDef
 	topLevelTypes map[string]struct{}
@@ -46,13 +47,17 @@ type artifactRow struct {
 	sourceModuleName     string
 	selectorPath         []dagql.Selector
 	targetPatterns       []string
-	collectionPath       []dagql.Selector
-	collectionKey        dagql.Input
-	collectionKeyType    *TypeDef
-	collectionDimension  string
-	collectionType       string
-	collectionBatchType  string
-	collectionOccurrence string
+	collectionLineage    []artifactCollectionOrigin
+}
+
+type artifactCollectionOrigin struct {
+	path       []dagql.Selector
+	key        dagql.Input
+	keyType    *TypeDef
+	dimension  string
+	typeName   string
+	batchType  string
+	occurrence string
 }
 
 // ArtifactDimension describes one coordinate axis in an Artifacts scope.
@@ -72,13 +77,7 @@ type Artifact struct {
 	sourceModuleName     string
 	selectorPath         []dagql.Selector
 	targetPatterns       []string
-	collectionPath       []dagql.Selector
-	collectionKey        dagql.Input
-	collectionKeyType    *TypeDef
-	collectionDimension  string
-	collectionType       string
-	collectionBatchType  string
-	collectionOccurrence string
+	collectionLineage    []artifactCollectionOrigin
 }
 
 func (*Artifacts) Type() *ast.Type {
@@ -257,6 +256,7 @@ func NewArtifactsFromTypeDefs(typeDefs dagql.ObjectResultArray[*TypeDef]) (*Arti
 		return selectorPathString(artifacts.rows[i].selectorPath) <
 			selectorPathString(artifacts.rows[j].selectorPath)
 	})
+	artifacts.allRows = cloneArtifactRows(artifacts.rows)
 	return artifacts, nil
 }
 
@@ -300,13 +300,23 @@ func NewArtifacts(
 		return selectorPathString(artifacts.rows[i].selectorPath) <
 			selectorPathString(artifacts.rows[j].selectorPath)
 	})
+	artifacts.allRows = cloneArtifactRows(artifacts.rows)
 	return artifacts, nil
+}
+
+func cloneArtifactRows(rows []*artifactRow) []*artifactRow {
+	cloned := make([]*artifactRow, len(rows))
+	for i, row := range rows {
+		cloned[i] = row.Clone()
+	}
+	return cloned
 }
 
 func (artifacts *Artifacts) Clone() *Artifacts {
 	cp := &Artifacts{
 		dimensions:    make([]*ArtifactDimension, len(artifacts.dimensions)),
 		rows:          make([]*artifactRow, len(artifacts.rows)),
+		allRows:       artifacts.allRows,
 		objects:       artifacts.objects,
 		typeDefs:      artifacts.typeDefs,
 		topLevelTypes: artifacts.topLevelTypes,
@@ -340,9 +350,54 @@ func (row *artifactRow) Clone() *artifactRow {
 	cp.coordinateDimensions = slices.Clone(row.coordinateDimensions)
 	cp.selectorPath = cloneSelectors(row.selectorPath)
 	cp.targetPatterns = slices.Clone(row.targetPatterns)
-	cp.collectionPath = cloneSelectors(row.collectionPath)
-	cp.collectionKeyType = cloneTypeDef(row.collectionKeyType)
+	cp.collectionLineage = cloneArtifactCollectionLineage(row.collectionLineage)
 	return &cp
+}
+
+func (origin artifactCollectionOrigin) Clone() artifactCollectionOrigin {
+	origin.path = cloneSelectors(origin.path)
+	origin.keyType = cloneTypeDef(origin.keyType)
+	return origin
+}
+
+func cloneArtifactCollectionLineage(
+	lineage []artifactCollectionOrigin,
+) []artifactCollectionOrigin {
+	cloned := make([]artifactCollectionOrigin, len(lineage))
+	for i, origin := range lineage {
+		cloned[i] = origin.Clone()
+	}
+	return cloned
+}
+
+func (row *artifactRow) immediateCollectionOrigin() *artifactCollectionOrigin {
+	if row == nil || len(row.collectionLineage) == 0 {
+		return nil
+	}
+	return &row.collectionLineage[len(row.collectionLineage)-1]
+}
+
+func artifactRowCollectionOccurrence(row *artifactRow) string {
+	origin := row.immediateCollectionOrigin()
+	if origin == nil {
+		return ""
+	}
+	return origin.occurrence
+}
+
+func artifactRowCollectionOrigin(
+	row *artifactRow,
+	occurrence string,
+) *artifactCollectionOrigin {
+	if row == nil {
+		return nil
+	}
+	for i := range row.collectionLineage {
+		if row.collectionLineage[i].occurrence == occurrence {
+			return &row.collectionLineage[i]
+		}
+	}
+	return nil
 }
 
 func (dimension *ArtifactDimension) Clone() *ArtifactDimension {
@@ -362,9 +417,15 @@ func (artifact *Artifact) Clone() *Artifact {
 	cp.coordinateDimensions = slices.Clone(artifact.coordinateDimensions)
 	cp.selectorPath = cloneSelectors(artifact.selectorPath)
 	cp.targetPatterns = slices.Clone(artifact.targetPatterns)
-	cp.collectionPath = cloneSelectors(artifact.collectionPath)
-	cp.collectionKeyType = cloneTypeDef(artifact.collectionKeyType)
+	cp.collectionLineage = cloneArtifactCollectionLineage(artifact.collectionLineage)
 	return &cp
+}
+
+func (artifact *Artifact) immediateCollectionOrigin() *artifactCollectionOrigin {
+	if artifact == nil || len(artifact.collectionLineage) == 0 {
+		return nil
+	}
+	return &artifact.collectionLineage[len(artifact.collectionLineage)-1]
 }
 
 func (artifacts *Artifacts) Dimensions() []*ArtifactDimension {
@@ -378,25 +439,23 @@ func (artifacts *Artifacts) Dimensions() []*ArtifactDimension {
 func (artifacts *Artifacts) Items() []*Artifact {
 	items := make([]*Artifact, len(artifacts.rows))
 	for i, row := range artifacts.rows {
-		items[i] = &Artifact{
-			coordinates:          append([]dagql.Nullable[dagql.String](nil), row.coordinates...),
-			coordinateDimensions: slices.Clone(row.coordinateDimensions),
-			scope:                artifacts,
-			rootField:            row.rootField,
-			rootType:             row.rootType,
-			sourceModuleName:     row.sourceModuleName,
-			selectorPath:         cloneSelectors(row.selectorPath),
-			targetPatterns:       slices.Clone(row.targetPatterns),
-			collectionPath:       cloneSelectors(row.collectionPath),
-			collectionKey:        row.collectionKey,
-			collectionKeyType:    cloneTypeDef(row.collectionKeyType),
-			collectionDimension:  row.collectionDimension,
-			collectionType:       row.collectionType,
-			collectionBatchType:  row.collectionBatchType,
-			collectionOccurrence: row.collectionOccurrence,
-		}
+		items[i] = artifacts.artifactForRow(row)
 	}
 	return items
+}
+
+func (artifacts *Artifacts) artifactForRow(row *artifactRow) *Artifact {
+	return &Artifact{
+		coordinates:          append([]dagql.Nullable[dagql.String](nil), row.coordinates...),
+		coordinateDimensions: slices.Clone(row.coordinateDimensions),
+		scope:                artifacts,
+		rootField:            row.rootField,
+		rootType:             row.rootType,
+		sourceModuleName:     row.sourceModuleName,
+		selectorPath:         cloneSelectors(row.selectorPath),
+		targetPatterns:       slices.Clone(row.targetPatterns),
+		collectionLineage:    cloneArtifactCollectionLineage(row.collectionLineage),
+	}
 }
 
 func (artifacts *Artifacts) FilterDimension(dimension string) (*Artifacts, error) {
@@ -584,13 +643,7 @@ func (artifact *Artifact) targetScope() *Artifacts {
 		sourceModuleName:     artifact.sourceModuleName,
 		selectorPath:         cloneSelectors(artifact.selectorPath),
 		targetPatterns:       slices.Clone(artifact.targetPatterns),
-		collectionPath:       cloneSelectors(artifact.collectionPath),
-		collectionKey:        artifact.collectionKey,
-		collectionKeyType:    cloneTypeDef(artifact.collectionKeyType),
-		collectionDimension:  artifact.collectionDimension,
-		collectionType:       artifact.collectionType,
-		collectionBatchType:  artifact.collectionBatchType,
-		collectionOccurrence: artifact.collectionOccurrence,
+		collectionLineage:    cloneArtifactCollectionLineage(artifact.collectionLineage),
 	}}
 	return target
 }
@@ -1214,6 +1267,17 @@ func (artifacts *Artifacts) discoverCollectionOccurrence(
 		group.Go(func() error {
 			branch := *artifacts
 			branch.rows = nil
+			origin := artifactCollectionOrigin{
+				path:       cloneSelectors(collectionPath),
+				key:        item.key,
+				keyType:    collection.KeyType.Clone(),
+				dimension:  dimension,
+				typeName:   artifactTypeCLIName(objectTypeDef(collectionTypeDef)),
+				occurrence: occurrence,
+			}
+			if batchObject := objectTypeDef(collection.BatchType); batchObject != nil {
+				origin.batchType = batchObject.Name
+			}
 			itemRow := &artifactRow{
 				coordinates:          item.coordinates,
 				coordinateDimensions: append(slices.Clone(root.coordinateDimensions), dimension),
@@ -1221,15 +1285,10 @@ func (artifacts *Artifacts) discoverCollectionOccurrence(
 				rootType:             itemObject.Name,
 				sourceModuleName:     root.sourceModuleName,
 				selectorPath:         item.path,
-				collectionPath:       cloneSelectors(collectionPath),
-				collectionKey:        item.key,
-				collectionKeyType:    collection.KeyType.Clone(),
-				collectionDimension:  dimension,
-				collectionType:       artifactTypeCLIName(objectTypeDef(collectionTypeDef)),
-				collectionOccurrence: occurrence,
-			}
-			if batchObject := objectTypeDef(collection.BatchType); batchObject != nil {
-				itemRow.collectionBatchType = batchObject.Name
+				collectionLineage: append(
+					cloneArtifactCollectionLineage(root.collectionLineage),
+					origin,
+				),
 			}
 			branch.rows = append(branch.rows, itemRow)
 

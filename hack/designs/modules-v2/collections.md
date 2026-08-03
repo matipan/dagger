@@ -199,6 +199,14 @@ expose `test`; the engine projects it as `c.batch.test`, running one
 `go test` process over many selected tests. `batch` operates on the current
 subset, so `c.subset(keys: ks).batch` sees only `ks`.
 
+A batch handler may also replace matching actions reached through nested
+collections below its items. This is recursive collection batching, not general
+ancestor-action shadowing: the handler must still live on a collection's
+`batch` type, and it only covers collection-origin artifacts whose collection
+lineage passes through that concrete occurrence. The handler sees only its
+immediate item subset, so it may cover an item subtree only when every matching
+descendant action in that subtree is selected.
+
 ## Extending Artifacts
 
 A collection occurrence contributes to the [Artifacts](./artifacts.md) model:
@@ -229,7 +237,8 @@ two places:
 1. collection selector dimensions lower to `subset(keys: ...)` on matching
    collections
 2. collection `batch` behavior may replace one-item-at-a-time expansion for
-   collection-origin rows only
+   collection-origin rows only, including complete matching subtrees reached
+   through nested collections
 
 For the canonical example:
 
@@ -251,6 +260,47 @@ go.tests.subset(keys: ["TestFoo", "TestBar"]).batch.test
 
 Static artifacts that share the item type dimension are not collection members.
 They never join a collection batch; their matching actions remain independent.
+
+### Recursive batching
+
+Every collection-origin artifact retains its complete collection lineage. For
+one Go test this might be `Modules[api] -> Directories[api/auth] ->
+Tests[TestAuth]`. A batch handler with the same normalized `functionPath` may be
+considered at every collection occurrence in that lineage.
+
+The compiler chooses batch implementations bottom-up:
+
+1. compile the exact selected artifact actions
+2. form immediate collection batches
+3. consider each outer collection batch for complete selected item subtrees
+4. choose the representation with fewer actions; on a tie keep the deeper,
+   more specific representation
+
+Selecting some immediate collection items is valid because `subset(keys)`
+communicates that subset to the handler. Selecting only some matching
+descendants inside an item does not qualify that item for an outer batch because
+the outer handler cannot observe the nested selection. Complete siblings may
+still batch while partial siblings keep their deeper implementations.
+
+For example, if `Tests.batch.test` runs selected tests in one directory and
+`Directories.batch.test` runs selected complete directories in one Go module:
+
+```console
+$ dagger check --go-module=api --go-test=TestAuth go-test:test
+# runs TestAuth.test directly
+
+$ dagger check --go-module=api --go-directory=api/auth go-test:test
+# runs once via that directory's Tests.batch.test
+
+$ dagger check --go-module=api go-test:test
+# runs once via that module's Directories.batch.test
+```
+
+Separate `Directories` occurrences belong to separate modules, so the last
+command produces one action per module when `--go-module` is omitted. A module
+may opt into a still-higher batch by exposing the same handler on
+`Modules.batch`; absent that handler, batching naturally stops at the module
+boundary.
 
 ## Checks and Generators
 
@@ -331,6 +381,12 @@ type) and batch checks (on the `batch` type):
   items run the batch check once over that subset.
 - Otherwise the item check remains.
 - A batch-only check runs through `batch` for any non-empty subset.
+
+The same exact normalized `functionPath` rule applies recursively. An outer
+batch handler may shadow matching actions below its item type only for complete
+selected subtrees, as described in [Recursive batching](#recursive-batching).
+Defining an ordinary action with the same name on an ancestor object does not
+create a batching relationship.
 
 An unshadowed item check runs once per item. Extend the canonical `GoTest` item
 type with a `lint` check alongside its `test`, and let `GoTests.batch` define

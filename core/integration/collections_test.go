@@ -383,6 +383,153 @@ type Test {
 `, out)
 	})
 
+	t.Run("recursive batching", func(ctx context.Context, t *testctx.T) {
+		recursive := workspaceBase(t, c).
+			With(initStandaloneDangModule("go", `
+type Go {
+  pub groups: Groups! {
+    Groups(names: ["api", "cloud"])
+  }
+}
+
+type Groups @collection {
+  pub names: [String!]! @keys
+
+  new(names: [String!]!) {
+    self.names = names
+    self
+  }
+
+  pub lookup(name: String!): Group! @get {
+    Group(name: name)
+  }
+
+  pub test: Void @check {
+    null
+  }
+}
+
+type Group {
+  pub name: String!
+
+  new(name: String!) {
+    self.name = name
+    self
+  }
+
+  pub tests: Tests! {
+    Tests(names: [name + "-one", name + "-two"])
+  }
+}
+
+type Tests @collection {
+  pub names: [String!]! @keys
+
+  new(names: [String!]!) {
+    self.names = names
+    self
+  }
+
+  pub lookup(name: String!): Test! @get {
+    Test(name: name)
+  }
+
+  pub test: Void @check {
+    raise "inner test batch should have been replaced"
+  }
+}
+
+type Test {
+  pub name: String!
+
+  new(name: String!) {
+    self.name = name
+    self
+  }
+
+  pub test: Void @check {
+    raise "individual test should have been replaced"
+  }
+}
+`))
+
+		out, err := recursive.With(daggerQuery(`{
+			currentWorkspace {
+				artifacts {
+					filterCoordinates(dimension: "type", values: ["go-test"]) {
+						plan(verb: CHECK, include: ["go-test:test"]) {
+							nodes {
+								functionPath
+								collectionBatched
+								target {
+									items {
+										group: coordinate(name: "go-group")
+										test: coordinate(name: "go-test")
+									}
+								}
+							}
+							run
+						}
+					}
+				}
+			}
+		}`)).Stdout(ctx)
+		require.NoError(t, err)
+		require.JSONEq(t, `{
+			"currentWorkspace": {
+				"artifacts": {
+					"filterCoordinates": {
+						"plan": {
+							"nodes": [{
+								"functionPath": ["test"],
+								"collectionBatched": true,
+								"target": {"items": [
+									{"group": "api", "test": "api-one"},
+									{"group": "api", "test": "api-two"},
+									{"group": "cloud", "test": "cloud-one"},
+									{"group": "cloud", "test": "cloud-two"}
+								]}
+							}],
+							"run": null
+						}
+					}
+				}
+			}
+		}`, out)
+
+		out, err = recursive.With(daggerQuery(`{
+			currentWorkspace {
+				artifacts {
+					filterCoordinates(dimension: "type", values: ["go-test"]) {
+						filterCoordinates(dimension: "go-test", values: ["api-one", "cloud-one"]) {
+							plan(verb: CHECK, include: ["go-test:test"]) {
+								nodes { collectionBatched target { items { coordinates } } }
+							}
+						}
+					}
+				}
+			}
+		}`)).Stdout(ctx)
+		require.NoError(t, err)
+		require.JSONEq(t, `{
+			"currentWorkspace": {
+				"artifacts": {
+					"filterCoordinates": {
+						"filterCoordinates": {
+							"plan": {"nodes": [{
+								"collectionBatched": false,
+								"target": {"items": [{"coordinates": ["go-test", "api", "api-one"]}]}
+							}, {
+								"collectionBatched": false,
+								"target": {"items": [{"coordinates": ["go-test", "cloud", "cloud-one"]}]}
+							}]}
+						}
+					}
+				}
+			}
+		}`, out)
+	})
+
 	t.Run("identical keys in separate occurrences", func(ctx context.Context, t *testctx.T) {
 		duplicateOccurrences := workspaceBase(t, c).
 			With(initStandaloneDangModule("go", `

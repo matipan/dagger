@@ -29,8 +29,10 @@ func TestArtifactActionTelemetryDescribesBatchScope(t *testing.T) {
 				dagql.NonNull(dagql.String("api/auth")),
 				dagql.NonNull(dagql.String(testName)),
 			},
-			selectorPath:         []dagql.Selector{{Field: "go"}, {Field: "tests"}},
-			collectionOccurrence: "go.tests",
+			selectorPath: []dagql.Selector{{Field: "go"}, {Field: "tests"}},
+			collectionLineage: []artifactCollectionOrigin{{
+				occurrence: "go.tests",
+			}},
 		}
 	}
 	action := &Action{
@@ -404,6 +406,10 @@ func TestActionsEqualUsesTargetRowSet(t *testing.T) {
 
 	right.functionPath = []string{"test"}
 	require.False(t, actionsEqual(left, right))
+
+	right.functionPath = []string{"lint"}
+	right.selectorPath = []dagql.Selector{{Field: "alternate"}}
+	require.False(t, actionsEqual(left, right))
 }
 
 func TestCollectionPlanBatchesShadowedActions(t *testing.T) {
@@ -500,6 +506,93 @@ func TestCollectionPlanKeepsBatchOnlyActionForSingleton(t *testing.T) {
 	require.Equal(
 		t,
 		`go.tests.subset(keys: ["unit"]).batch`,
+		selectorPathString(plan.nodes[0].selectorPath),
+	)
+}
+
+func TestCollectionPlanRecursivelyBatchesCompleteSubtrees(t *testing.T) {
+	artifacts := recursiveCollectionPlanTestArtifacts(t)
+
+	plan, err := artifacts.Plan(
+		VerbCheck,
+		[]TargetPattern{"go-test:test"},
+		nil,
+	)
+	require.NoError(t, err)
+	require.Len(t, plan.nodes, 1)
+
+	batch := plan.nodes[0]
+	require.True(t, batch.CollectionBatched())
+	require.Len(t, batch.target.rows, 6)
+	require.NotNil(t, batch.batchOrigin)
+	require.Equal(t, "Directories_Batch", batch.batchOrigin.batchType)
+	attrs := attributeValues(batch.telemetryAttributes())
+	require.Equal(t, "directories", attrs[telemetryattrs.ArtifactActionBatchTypeAttr])
+	require.Equal(t, int64(2), attrs[telemetryattrs.ArtifactActionBatchDepthAttr])
+	require.Equal(
+		t,
+		`go.modules.get(key: "api").testDirectories.subset(keys: ["api/auth","api/db","api/server"]).batch`,
+		selectorPathString(batch.selectorPath),
+	)
+}
+
+func TestCollectionPlanKeepsDeeperBatchOnRecursiveTie(t *testing.T) {
+	artifacts := recursiveCollectionPlanTestArtifacts(t)
+	artifacts, err := artifacts.FilterCoordinates("go-directory", []string{"api/auth"})
+	require.NoError(t, err)
+
+	plan, err := artifacts.Plan(
+		VerbCheck,
+		[]TargetPattern{"go-test:test"},
+		nil,
+	)
+	require.NoError(t, err)
+	require.Len(t, plan.nodes, 1)
+	require.True(t, plan.nodes[0].CollectionBatched())
+	require.Equal(t, "Tests_Batch", plan.nodes[0].batchOrigin.batchType)
+}
+
+func TestCollectionPlanRejectsRecursiveBatchForPartialSubtree(t *testing.T) {
+	artifacts := recursiveCollectionPlanTestArtifacts(t)
+	artifacts, err := artifacts.FilterCoordinates(
+		"go-test",
+		[]string{"TestAuth", "TestDatabase"},
+	)
+	require.NoError(t, err)
+
+	plan, err := artifacts.Plan(
+		VerbCheck,
+		[]TargetPattern{"go-test:test"},
+		nil,
+	)
+	require.NoError(t, err)
+	require.Len(t, plan.nodes, 2)
+	for _, node := range plan.nodes {
+		require.False(t, node.CollectionBatched())
+	}
+}
+
+func TestCollectionPlanRecursivelyBatchesCompleteItemSubset(t *testing.T) {
+	artifacts := recursiveCollectionPlanTestArtifacts(t)
+	artifacts, err := artifacts.FilterCoordinates(
+		"go-directory",
+		[]string{"api/auth", "api/db"},
+	)
+	require.NoError(t, err)
+
+	plan, err := artifacts.Plan(
+		VerbCheck,
+		[]TargetPattern{"go-test:test"},
+		nil,
+	)
+	require.NoError(t, err)
+	require.Len(t, plan.nodes, 1)
+	require.True(t, plan.nodes[0].CollectionBatched())
+	require.Equal(t, "Directories_Batch", plan.nodes[0].batchOrigin.batchType)
+	require.Len(t, plan.nodes[0].target.rows, 4)
+	require.Equal(
+		t,
+		`go.modules.get(key: "api").testDirectories.subset(keys: ["api/auth","api/db"]).batch`,
 		selectorPathString(plan.nodes[0].selectorPath),
 	)
 }
@@ -628,19 +721,126 @@ func collectionPlanTestArtifacts(t *testing.T) *Artifacts {
 				dagql.NonNull(dagql.String("go-test")),
 				dagql.NonNull(dagql.String(key)),
 			},
-			rootField:            "go",
-			rootType:             "GoTest",
-			sourceModuleName:     "go",
-			selectorPath:         itemPath,
-			collectionPath:       collectionPath,
-			collectionKey:        dagql.String(key),
-			collectionKeyType:    keyType,
-			collectionDimension:  "go-test",
-			collectionType:       "go-tests",
-			collectionBatchType:  "GoTests_Batch",
-			collectionOccurrence: "go.tests",
+			rootField:        "go",
+			rootType:         "GoTest",
+			sourceModuleName: "go",
+			selectorPath:     itemPath,
+			collectionLineage: []artifactCollectionOrigin{{
+				path:       collectionPath,
+				key:        dagql.String(key),
+				keyType:    keyType,
+				dimension:  "go-test",
+				typeName:   "go-tests",
+				batchType:  "GoTests_Batch",
+				occurrence: "go.tests",
+			}},
 		})
 	}
+	return artifacts
+}
+
+func recursiveCollectionPlanTestArtifacts(t *testing.T) *Artifacts {
+	t.Helper()
+	keyType := (&TypeDef{}).WithKind(TypeDefKindString)
+	itemType := planTestObject(t, "GoTest", planTestAction(t, "test", VerbCheck))
+	testsBatchType := planTestObject(t, "Tests_Batch", planTestAction(t, "test", VerbCheck))
+	directoriesBatchType := planTestObject(t, "Directories_Batch", planTestAction(t, "test", VerbCheck))
+	artifacts := &Artifacts{
+		dimensions: []*ArtifactDimension{
+			{Name: ArtifactTypeDimension, KeyType: (&TypeDef{}).WithKind(TypeDefKindString)},
+			{Name: "go-module", KeyType: keyType},
+			{Name: "go-directory", KeyType: keyType},
+			{Name: "go-test", KeyType: keyType},
+		},
+		objects: map[string]*ObjectTypeDef{
+			"GoTest":            objectTypeDef(itemType.Self()),
+			"Tests_Batch":       objectTypeDef(testsBatchType.Self()),
+			"Directories_Batch": objectTypeDef(directoriesBatchType.Self()),
+		},
+		typeDefs: map[string]*TypeDef{},
+	}
+	tests := map[string][]string{
+		"api/auth":   {"TestAuth", "TestJWT"},
+		"api/db":     {"TestDatabase", "TestMigration"},
+		"api/server": {"TestGraphQL", "TestServer"},
+	}
+	for _, directory := range []string{"api/auth", "api/db", "api/server"} {
+		directoriesPath := []dagql.Selector{
+			{Field: "go"},
+			{Field: "modules"},
+			{
+				Field: collectionGetFunctionName,
+				Args: []dagql.NamedInput{{
+					Name:  collectionKeyArgName,
+					Value: dagql.String("api"),
+				}},
+			},
+			{Field: "testDirectories"},
+		}
+		directoryOrigin := artifactCollectionOrigin{
+			path:       directoriesPath,
+			key:        dagql.String(directory),
+			keyType:    keyType,
+			dimension:  "go-directory",
+			typeName:   "directories",
+			batchType:  "Directories_Batch",
+			occurrence: selectorPathString(directoriesPath),
+		}
+		testsPath := appendSelector(
+			directoriesPath,
+			dagql.Selector{
+				Field: collectionGetFunctionName,
+				Args: []dagql.NamedInput{{
+					Name:  collectionKeyArgName,
+					Value: dagql.String(directory),
+				}},
+			},
+		)
+		testsPath = appendSelector(testsPath, dagql.Selector{Field: "tests"})
+		for _, testName := range tests[directory] {
+			testOrigin := artifactCollectionOrigin{
+				path:       testsPath,
+				key:        dagql.String(testName),
+				keyType:    keyType,
+				dimension:  "go-test",
+				typeName:   "tests",
+				batchType:  "Tests_Batch",
+				occurrence: selectorPathString(testsPath),
+			}
+			artifacts.rows = append(artifacts.rows, &artifactRow{
+				coordinates: []dagql.Nullable[dagql.String]{
+					dagql.NonNull(dagql.String("go-test")),
+					dagql.NonNull(dagql.String("api")),
+					dagql.NonNull(dagql.String(directory)),
+					dagql.NonNull(dagql.String(testName)),
+				},
+				coordinateDimensions: []string{
+					ArtifactTypeDimension,
+					"go-module",
+					"go-directory",
+					"go-test",
+				},
+				rootField:        "go",
+				rootType:         "GoTest",
+				sourceModuleName: "go",
+				selectorPath: appendSelector(
+					testsPath,
+					dagql.Selector{
+						Field: collectionGetFunctionName,
+						Args: []dagql.NamedInput{{
+							Name:  collectionKeyArgName,
+							Value: dagql.String(testName),
+						}},
+					},
+				),
+				collectionLineage: []artifactCollectionOrigin{
+					directoryOrigin,
+					testOrigin,
+				},
+			})
+		}
+	}
+	artifacts.allRows = cloneArtifactRows(artifacts.rows)
 	return artifacts
 }
 

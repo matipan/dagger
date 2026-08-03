@@ -12,6 +12,8 @@ const (
 	ArtifactActionFunctionPathAttr       = "dagger.io/artifact.action.function_path"              // []string
 	ArtifactActionSourceModuleAttr       = "dagger.io/artifact.action.source_module"              // string
 	ArtifactActionCollectionBatchedAttr  = "dagger.io/artifact.action.collection_batched"         // bool
+	ArtifactActionBatchTypeAttr          = "dagger.io/artifact.action.batch.type"                 // string
+	ArtifactActionBatchDepthAttr         = "dagger.io/artifact.action.batch.depth"                // int64
 	ArtifactActionTargetCountAttr        = "dagger.io/artifact.action.target.count"               // int64
 	ArtifactActionTargetDigestAttr       = "dagger.io/artifact.action.target.digest"              // string
 	ArtifactActionCommonDimensionsAttr   = "dagger.io/artifact.action.target.common_dimensions"   // []string

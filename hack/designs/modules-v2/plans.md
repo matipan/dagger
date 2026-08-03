@@ -107,8 +107,9 @@ type Action {
   subset represented by `target`, rather than invoking the same function once
   per selected artifact.
 
-  If true, `target` must contain artifacts from exactly one collection
-  occurrence.
+  If true, every artifact in `target` must descend from exactly one batching
+  collection occurrence. The artifacts may originate from nested collections
+  below that occurrence.
   """
   collectionBatched: Boolean!
 
@@ -314,12 +315,14 @@ validation and matching.
    Empty `include` means all entrypoints for the verb. Both match
    **entrypoints only** — dependencies are never matched or filtered directly.
 5. **Compilation and batching.** Retained entrypoints become concrete `Action`s.
-   Dependencies are added automatically; rollup through glue and batch-vs-item
-   decisions are resolved here, before nodes exist.
+   Dependencies are added automatically; rollup through glue and recursive
+   batch-vs-item decisions are resolved here, before nodes exist.
 6. **Dedup and ordering.** Duplicate actions collapse by exact identity
-   `(verb, target, functionPath, collectionBatched)`, where `target` equality
-   means same dimension order and same row set. Ordering comes from explicit
-   composition (`withAfter`) or the verb's construction rules.
+   `(verb, target, functionPath, implementation)`, where `target` equality means
+   same dimension order and same row set and `implementation` identifies the
+   selected item or collection-batch call. `collectionBatched` is derived from
+   that implementation. Ordering comes from explicit composition (`withAfter`)
+   or the verb's construction rules.
 
 This document defines construction for `check` and `generate`. `UP` and `SHIP`
 add their own rules in later docs, but the shared `Plan.services()`/`service()`
@@ -335,7 +338,8 @@ The recursive verb. From the current scope, the compiler:
 2. discovers local check occurrences with `artifact.actions([CHECK])`
 3. applies `include`/`exclude` to those entrypoints
 4. groups retained occurrences by exact `functionPath`
-5. resolves collection batching per grouped path
+5. resolves collection batching bottom-up across each occurrence's collection
+   lineage
 6. recursively compiles referenced checks
 7. adds `after` edges from referenced checks to selected entrypoints
 8. deduplicates
@@ -343,9 +347,9 @@ The recursive verb. From the current scope, the compiler:
 `include`/`exclude` apply only to entrypoints; referenced checks are always
 retained as prerequisites.
 
-If the selected artifacts for a `functionPath` belong to one collection
-occurrence and that collection exposes the same handler on its batch type, the
-selected cardinality decides which implementation runs:
+If selected artifacts for a `functionPath` belong to one collection occurrence
+and that collection exposes the same handler on its batch type, the selected
+cardinality decides which immediate implementation runs:
 
 - one selected item compiles its item-level action
 - two or more selected items compile one `collectionBatched = true` action
@@ -365,6 +369,20 @@ if `GoTests` exposes `test` on its batch type (see
 yields one batched action over `TestFoo`+`TestBar` and one independent item
 action for the static `Go.engine` artifact. Without batch behavior, every
 selected artifact gets an item action.
+
+Batch resolution then continues through outer collection occurrences in each
+artifact's lineage. An outer handler is eligible for an immediate item when the
+selected matching descendant actions below that item are complete. The outer
+handler may receive any eligible immediate-item subset through `subset(keys)`;
+partial descendant selection stays on the deeper implementation. The compiler
+chooses the alternative with fewer actions and keeps the deeper implementation
+on ties.
+
+The Action's `target` and `functionPath` continue to describe the semantic
+artifact actions selected by the user. Its engine-internal implementation call
+may point to an outer collection's batch handler. Dependencies are compiled from
+the semantic entrypoints and preserved when their executions are replaced by a
+batch; dependencies declared by the chosen batch handler are included too.
 
 ### `generate`
 
@@ -408,8 +426,9 @@ cancel remaining independent actions after the first failure.
 
 - A Plan is a finite DAG of Actions with "after" edges; parallelism is implicit.
   No loops, conditionals, or variables.
-- Verb is part of Action identity; one Action is
-  `(verb, target, functionPath, collectionBatched)`.
+- Verb and the selected implementation are part of Action identity; one Action
+  is `(verb, target, functionPath, implementation)`. `collectionBatched` is a
+  projection of that implementation, not sufficient identity by itself.
 - Artifacts select artifacts; plans select entrypoints. `Artifacts.plan(...)` is
   the single public choke point — exact entrypoint selection is not a separate
   filter API on `Artifacts`.
@@ -418,7 +437,8 @@ cancel remaining independent actions after the first failure.
   lineage and lifecycle action paths. Bare actions and bare types are invalid.
 - Entrypoint selectors select entrypoints only; dependencies are pulled in
   automatically and never filtered directly.
-- Batching is resolved at compile time; executors never infer it.
+- Batching is resolved at compile time, recursively over collection lineage;
+  executors never infer it.
 - Plan edges are semantically static; DagQL IDs reference already-compiled
   edges, they are not late-bound selectors.
 - `Action.withAfter` is public: used internally during compilation and available
