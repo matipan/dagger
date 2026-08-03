@@ -6,7 +6,9 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"sync"
 
+	"github.com/dagger/dagger/internal/buildkit/identity"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
@@ -19,6 +21,107 @@ import (
 
 var _ dagql.AroundFunc = AroundFunc
 
+const artifactActionTraceStateKey = "dagger-action"
+
+type artifactActionCacheTracker struct {
+	mu          sync.Mutex
+	cacheHits   int
+	pendingLazy bool
+	finished    bool
+}
+
+func (tracker *artifactActionCacheTracker) record(cached, pendingLazy bool) {
+	if tracker == nil {
+		return
+	}
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	if tracker.finished {
+		return
+	}
+	if pendingLazy {
+		tracker.pendingLazy = true
+	}
+	if cached && !pendingLazy {
+		tracker.cacheHits++
+	}
+}
+
+func (tracker *artifactActionCacheTracker) finish() bool {
+	if tracker == nil {
+		return false
+	}
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	if tracker.finished {
+		return false
+	}
+	tracker.finished = true
+	return tracker.cacheHits > 0 && !tracker.pendingLazy
+}
+
+var artifactActionCacheTrackers sync.Map
+
+type artifactActionTrackingSpan struct {
+	trace.Span
+	spanContext trace.SpanContext
+}
+
+func (span artifactActionTrackingSpan) SpanContext() trace.SpanContext {
+	return span.spanContext
+}
+
+// trackArtifactActionCache carries a private tracker through W3C trace state so
+// nested SDK calls can contribute cache outcomes to their enclosing action.
+func trackArtifactActionCache(ctx context.Context) (context.Context, func() bool) {
+	span := trace.SpanFromContext(ctx)
+	spanContext := span.SpanContext()
+	if !spanContext.IsValid() {
+		return ctx, func() bool { return false }
+	}
+
+	trackerID := identity.NewID()
+	tracker := new(artifactActionCacheTracker)
+	artifactActionCacheTrackers.Store(trackerID, tracker)
+
+	value := trackerID
+	if parent := spanContext.TraceState().Get(artifactActionTraceStateKey); parent != "" {
+		value = parent + ":" + value
+	}
+	traceState, err := spanContext.TraceState().Insert(artifactActionTraceStateKey, value)
+	if err != nil {
+		artifactActionCacheTrackers.Delete(trackerID)
+		return ctx, func() bool { return false }
+	}
+
+	ctx = trace.ContextWithSpan(ctx, artifactActionTrackingSpan{
+		Span:        span,
+		spanContext: spanContext.WithTraceState(traceState),
+	})
+	return ctx, func() bool {
+		artifactActionCacheTrackers.Delete(trackerID)
+		return tracker.finish()
+	}
+}
+
+func recordArtifactActionCacheOutcome(ctx context.Context, cached, pendingLazy bool) {
+	value := trace.SpanContextFromContext(ctx).TraceState().Get(artifactActionTraceStateKey)
+	for _, trackerID := range strings.Split(value, ":") {
+		if trackerID == "" {
+			continue
+		}
+		if tracker, found := artifactActionCacheTrackers.Load(trackerID); found {
+			tracker.(*artifactActionCacheTracker).record(cached, pendingLazy)
+		}
+	}
+}
+
+func artifactActionCacheDone(ctx context.Context) func(dagql.AnyResult, bool, *error) {
+	return func(res dagql.AnyResult, cached bool, _ *error) {
+		recordArtifactActionCacheOutcome(ctx, cached, dagql.HasPendingLazyEvaluation(res))
+	}
+}
+
 func AroundFunc(
 	ctx context.Context,
 	req *dagql.CallRequest,
@@ -26,8 +129,9 @@ func AroundFunc(
 	context.Context,
 	func(res dagql.AnyResult, cached bool, rerr *error),
 ) {
+	actionCacheDone := artifactActionCacheDone(ctx)
 	if req == nil || req.ResultCall == nil {
-		return ctx, dagql.NoopDone
+		return ctx, actionCacheDone
 	}
 	// Static, debug-independent profiling-skip classification, SEPARATE from the
 	// introspectionInfo UI decision below. Stamp it onto the call frame BEFORE the
@@ -40,16 +144,16 @@ func AroundFunc(
 	// the object call site.
 	req.ResultCall.ProfileSkip = profileSkip(req.ReceiverTypeName, req.Field)
 	if dagql.IsSkipped(ctx) {
-		return ctx, dagql.NoopDone
+		return ctx, actionCacheDone
 	}
 	introspection, receiver := introspectionInfo(ctx, req.ResultCall)
 	if introspection {
-		return dagql.WithSkip(ctx), dagql.NoopDone
+		return dagql.WithSkip(ctx), actionCacheDone
 	}
 	if isMeta(ctx, req.ResultCall) {
 		// introspection+meta are very uninteresting spans
 		// dagops are all self calls, no need to emit additional spans here
-		return ctx, dagql.NoopDone
+		return ctx, actionCacheDone
 	}
 
 	base := "Unknown"
@@ -63,14 +167,14 @@ func AroundFunc(
 	callDigest, err := req.RecipeDigest(ctx)
 	if err != nil {
 		slog.WarnContext(ctx, "failed to derive call digest", "field", spanName, "err", err)
-		return ctx, dagql.NoopDone
+		return ctx, actionCacheDone
 	}
 	var q *Query
 	if currentQuery, currentQueryErr := CurrentQuery(ctx); currentQueryErr == nil {
 		q = currentQuery
 		if seenKeys, seenKeysErr := q.TelemetrySeenKeyStore(ctx); seenKeysErr == nil {
 			if !dagql.ShouldEmitTelemetry(ctx, seenKeys, callDigest.String(), req.DoNotCache) {
-				return ctx, dagql.NoopDone
+				return ctx, actionCacheDone
 			}
 		}
 	}
@@ -83,12 +187,12 @@ func AroundFunc(
 	callPB, err := req.ResultCall.CallPB(ctx)
 	if err != nil {
 		slog.WarnContext(ctx, "failed to build call payload", "field", spanName, "err", err)
-		return ctx, dagql.NoopDone
+		return ctx, actionCacheDone
 	}
 	callAttr, err := callPB.Encode()
 	if err != nil {
 		slog.WarnContext(ctx, "failed to encode call", "field", spanName, "err", err)
-		return ctx, dagql.NoopDone
+		return ctx, actionCacheDone
 	}
 	attrs := []attribute.KeyValue{
 		attribute.String(telemetry.DagDigestAttr, callDigest.String()),
@@ -146,6 +250,7 @@ func AroundFunc(
 	ctx, span := Tracer(ctx).Start(ctx, spanName, trace.WithAttributes(attrs...))
 
 	return ctx, func(res dagql.AnyResult, cached bool, err *error) {
+		actionCacheDone(res, cached, err)
 		slog.InfoContext(ctx, "end call",
 			"field", spanName,
 			"cached", cached,

@@ -1211,7 +1211,11 @@ func (action *Action) runCheck(ctx context.Context) (rerr error) {
 		telemetry.Reveal(),
 		trace.WithAttributes(attrs...),
 	)
+	finishCacheTracking := func() bool { return false }
 	defer func() {
+		if finishCacheTracking() && rerr == nil {
+			span.SetAttributes(attribute.Bool(telemetry.CachedAttr, true))
+		}
 		span.SetAttributes(attribute.Bool(telemetry.CheckPassedAttr, rerr == nil))
 		telemetry.EndWithCause(span, &rerr)
 	}()
@@ -1220,6 +1224,7 @@ func (action *Action) runCheck(ctx context.Context) (rerr error) {
 	if err != nil {
 		return err
 	}
+	ctx, finishCacheTracking = trackArtifactActionCache(ctx)
 	var result dagql.AnyResult
 	if err := srv.Select(
 		dagql.WithNonInternalTelemetry(ctx),
@@ -1258,12 +1263,19 @@ func (action *Action) generateChanges(ctx context.Context) (_ *Changeset, rerr e
 		telemetry.Reveal(),
 		trace.WithAttributes(attrs...),
 	)
-	defer telemetry.EndWithCause(span, &rerr)
+	finishCacheTracking := func() bool { return false }
+	defer func() {
+		if finishCacheTracking() && rerr == nil {
+			span.SetAttributes(attribute.Bool(telemetry.CachedAttr, true))
+		}
+		telemetry.EndWithCause(span, &rerr)
+	}()
 
 	srv, parent, leaf, err := action.selectionParent(ctx)
 	if err != nil {
 		return nil, err
 	}
+	ctx, finishCacheTracking = trackArtifactActionCache(ctx)
 	var changes dagql.ObjectResult[*Changeset]
 	if err := srv.Select(
 		dagql.WithNonInternalTelemetry(ctx),

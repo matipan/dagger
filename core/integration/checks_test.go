@@ -289,6 +289,40 @@ func (ChecksSuite) TestChecksFailFast(ctx context.Context, t *testctx.T) {
 	require.Contains(t, out, "context canceled")
 }
 
+func (ChecksSuite) TestCachedArtifactActionTelemetry(ctx context.Context, t *testctx.T) {
+	c := connect(ctx, t)
+	mod := workspaceBase(t, c).
+		With(initStandaloneDangModule("cache-fixture", `
+type CacheFixture {
+  pub test: Void @check {
+    container
+      .from("alpine:3.21.3")
+      .withExec(["true"])
+      .sync
+    null
+  }
+}
+`))
+
+	warmed := mod.With(daggerExec(
+		"--progress=report",
+		"check",
+		"cache-fixture:test",
+	))
+	coldOut, err := warmed.CombinedOutput(ctx)
+	require.NoError(t, err, coldOut)
+	require.Regexp(t, `test.*OK`, coldOut)
+	require.NotContains(t, coldOut, "CACHED")
+
+	out, err := warmed.With(daggerExec(
+		"--progress=report",
+		"check",
+		"cache-fixture:test",
+	)).CombinedOutput(ctx)
+	require.NoError(t, err, out)
+	require.Regexp(t, `test.*CACHED`, out)
+}
+
 func (ChecksSuite) TestChecksAsToolchain(ctx context.Context, t *testctx.T) {
 	c := connect(ctx, t)
 	for _, tc := range []struct {

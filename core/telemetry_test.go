@@ -374,3 +374,40 @@ func TestRecordStatusDoesNotMarkPendingLazyResultCached(t *testing.T) {
 		require.NotEqual(t, telemetry.CachedAttr, string(attr.Key))
 	}
 }
+
+func TestArtifactActionCacheTrackingPropagatesThroughTraceState(t *testing.T) {
+	ctx, span := trace.NewNoopTracerProvider().Tracer("test").Start(t.Context(), "action")
+	spanContext := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: trace.TraceID{1},
+		SpanID:  trace.SpanID{1},
+	})
+	ctx = trace.ContextWithSpan(ctx, artifactActionTrackingSpan{
+		Span:        span,
+		spanContext: spanContext,
+	})
+
+	trackedCtx, finish := trackArtifactActionCache(ctx)
+	propagatedCtx := trace.ContextWithSpanContext(
+		t.Context(),
+		trace.SpanContextFromContext(trackedCtx),
+	)
+	recordArtifactActionCacheOutcome(propagatedCtx, true, false)
+	require.True(t, finish())
+}
+
+func TestArtifactActionCacheTrackingRejectsPendingLazyWork(t *testing.T) {
+	ctx, span := trace.NewNoopTracerProvider().Tracer("test").Start(t.Context(), "action")
+	spanContext := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: trace.TraceID{1},
+		SpanID:  trace.SpanID{2},
+	})
+	ctx = trace.ContextWithSpan(ctx, artifactActionTrackingSpan{
+		Span:        span,
+		spanContext: spanContext,
+	})
+
+	trackedCtx, finish := trackArtifactActionCache(ctx)
+	recordArtifactActionCacheOutcome(trackedCtx, true, false)
+	recordArtifactActionCacheOutcome(trackedCtx, false, true)
+	require.False(t, finish())
+}

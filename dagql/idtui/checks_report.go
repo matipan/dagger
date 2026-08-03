@@ -115,7 +115,10 @@ func (fe *frontendPretty) renderCheckNode(ctx tuist.Context, out TermOutput, r *
 func (fe *frontendPretty) checkStatusLine(out TermOutput, r *renderer, node *dagui.CheckNode, indent string) string {
 	icon, color := IconSuccess, termenv.ANSIGreen
 	status := "OK"
-	if node.Failed {
+	if node.Span.IsCached() {
+		icon, color = IconCached, termenv.ANSIBlue
+		status = "CACHED"
+	} else if node.Failed {
 		icon, color = IconFailure, termenv.ANSIRed
 		status = "ERROR"
 	}

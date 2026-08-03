@@ -692,6 +692,38 @@ func TestChecksReportNestsSubCheckHeader(t *testing.T) {
 	}
 }
 
+func TestChecksReportRendersCachedArtifactAction(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	db := dagui.NewDB()
+	checkID := prettyTestSpanID(1)
+	start := time.Unix(100, 0)
+	db.ImportSnapshots([]dagui.SpanSnapshot{{
+		ID:                         checkID,
+		TraceID:                    prettyTestTraceID(),
+		Name:                       "go-test:test",
+		StartTime:                  start,
+		EndTime:                    start.Add(time.Second),
+		CheckName:                  "go-test:test",
+		ArtifactActionID:           "sha256:cached-action",
+		ArtifactActionFunctionPath: []string{"test"},
+		Cached:                     true,
+		Final:                      true,
+	}})
+	db.SetPrimarySpan(checkID)
+
+	fe := NewWithDB(io.Discard, db)
+	fe.recalculateViewLocked()
+	r := newRenderer(fe.db, 0, fe.FrontendOpts, true)
+	joined := strings.Join(fe.checksReport(tuist.Context{Width: 120}, r, false), "\n")
+
+	if !strings.Contains(joined, "test") || !strings.Contains(joined, "CACHED") {
+		t.Fatalf("cached artifact action report missing cached state:\n%s", joined)
+	}
+	if strings.Contains(joined, " OK") {
+		t.Fatalf("cached artifact action report rendered as OK:\n%s", joined)
+	}
+}
+
 // rerunReportDB builds a DB with a failed outermost check (ci:bootstrap) whose
 // sub-check (go:lint) also failed, for exercising the RE-RUN section.
 func rerunReportDB(t *testing.T) *dagui.DB {
