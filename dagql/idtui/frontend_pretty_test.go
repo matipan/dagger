@@ -840,13 +840,68 @@ func TestArtifactCheckReportShowsBatchScopeAndExactRerun(t *testing.T) {
 	fe.recalculateViewLocked()
 	r := newRenderer(fe.db, 0, fe.FrontendOpts, true)
 	report := strings.Join(fe.checksReport(tuist.Context{Width: 120}, r, false), "\n")
-	if !strings.Contains(report, "test --go-module=api --go-directory=api/auth 2 go-tests") {
+	if !strings.Contains(report, "test --go-module=api --go-directory=api/auth 2 go-test") {
 		t.Fatalf("artifact batch scope missing from check report:\n%s", report)
 	}
 	rerun := strings.Join(fe.renderRerunSection(nil), "\n")
 	want := "dagger check --go-module=api --go-directory=api/auth --go-test=TestAuth --go-test=TestJWT go-test:test"
 	if !strings.Contains(rerun, want) {
 		t.Fatalf("artifact rerun missing %q:\n%s", want, rerun)
+	}
+}
+
+func TestArtifactActionTargetSummaryUsesArtifactTypeWithoutPluralizing(t *testing.T) {
+	tests := []struct {
+		name string
+		span *dagui.Span
+		want string
+	}{
+		{
+			name: "batched artifacts spanning directories",
+			span: &dagui.Span{
+				SpanSnapshot: dagui.SpanSnapshot{
+					ArtifactActionID:                "sha256:go-tests",
+					ArtifactActionCollectionBatched: true,
+					ArtifactActionTargetCount:       124,
+					ArtifactActionCommonDimensions:  []string{"type", "go-module"},
+					ArtifactActionCommonCoordinates: []string{"go-test", "api"},
+					ArtifactActionVaryingDimension:  "go-directory",
+				},
+			},
+			want: "124 go-test",
+		},
+		{
+			name: "single batched artifact",
+			span: &dagui.Span{
+				SpanSnapshot: dagui.SpanSnapshot{
+					ArtifactActionID:                "sha256:one-test",
+					ArtifactActionCollectionBatched: true,
+					ArtifactActionTargetCount:       1,
+					ArtifactActionCommonDimensions:  []string{"type"},
+					ArtifactActionCommonCoordinates: []string{"go-test"},
+				},
+			},
+			want: "1 go-test",
+		},
+		{
+			name: "mixed artifact types",
+			span: &dagui.Span{
+				SpanSnapshot: dagui.SpanSnapshot{
+					ArtifactActionID:                "sha256:mixed",
+					ArtifactActionCollectionBatched: true,
+					ArtifactActionTargetCount:       6,
+				},
+			},
+			want: "6 artifact",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := artifactActionTargetSummary(test.span); got != test.want {
+				t.Fatalf("artifactActionTargetSummary() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

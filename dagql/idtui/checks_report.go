@@ -163,11 +163,11 @@ func artifactActionTargetSummary(span *dagui.Span) string {
 		return ""
 	}
 	unit := "artifact"
-	if span.ArtifactActionVaryingDimension != "" {
-		unit = span.ArtifactActionVaryingDimension
-	}
-	if span.ArtifactActionTargetCount != 1 {
-		unit += "s"
+	for index, dimension := range span.ArtifactActionCommonDimensions {
+		if dimension == "type" && index < len(span.ArtifactActionCommonCoordinates) {
+			unit = span.ArtifactActionCommonCoordinates[index]
+			break
+		}
 	}
 	return fmt.Sprintf("%d %s", span.ArtifactActionTargetCount, unit)
 }
