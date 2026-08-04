@@ -333,13 +333,16 @@ func (action *Action) batchDepth() int {
 	if action == nil || action.batchOrigin == nil || action.target == nil || len(action.target.rows) == 0 {
 		return 0
 	}
-	lineage := action.target.rows[0].collectionLineage
-	for i := range lineage {
-		if lineage[i].occurrence == action.batchOrigin.occurrence {
-			return len(lineage) - i
+	depth := 0
+	for _, row := range action.target.rows {
+		for i := range row.collectionLineage {
+			if row.collectionLineage[i].occurrence == action.batchOrigin.occurrence {
+				depth = max(depth, len(row.collectionLineage)-i)
+				break
+			}
 		}
 	}
-	return 0
+	return depth
 }
 
 func (plan *Plan) recordTelemetry(ctx context.Context) {
@@ -645,11 +648,13 @@ func (artifact *Artifact) planActions(verb Verb) ([]*Action, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, batchAction := range batchActions {
-		itemActions = slices.DeleteFunc(itemActions, func(itemAction *Action) bool {
+	for index, itemAction := range itemActions {
+		batchIndex := slices.IndexFunc(batchActions, func(batchAction *Action) bool {
 			return slices.Equal(batchAction.functionPath, itemAction.functionPath)
 		})
-		itemActions = append(itemActions, batchAction)
+		if batchIndex >= 0 {
+			itemActions[index] = batchActions[batchIndex]
+		}
 	}
 	return itemActions, nil
 }
@@ -785,6 +790,7 @@ func (artifacts *Artifacts) PlanWithSourceExcludes(
 	if err != nil {
 		return nil, err
 	}
+	nodes = mergeEquivalentBatchImplementations(nodes)
 
 	sort.SliceStable(nodes, func(i, j int) bool {
 		left := nodes[i].target.rows[0]
@@ -798,8 +804,7 @@ func (artifacts *Artifacts) PlanWithSourceExcludes(
 }
 
 // Batch candidates have already been merged by collection occurrence. Resolve
-// singleton candidates back to the matching item implementation; batch-only
-// actions remain collection-batched.
+// singleton candidates back to their semantic item implementation.
 func resolveSingletonCollectionBatches(nodes []*Action) error {
 	for index, batchAction := range nodes {
 		if !batchAction.collectionBatched || len(batchAction.target.rows) != 1 {
@@ -872,8 +877,8 @@ type recursiveBatchGroup struct {
 }
 
 // Immediate collection batching has already run. Walk the remaining collection
-// lineage from the inside out and replace complete item subtrees only when the
-// outer handler reduces the number of actions.
+// lineage from the inside out and replace complete item subtrees with the
+// outermost matching handler.
 func resolveRecursiveCollectionBatches(
 	artifacts *Artifacts,
 	nodes []*Action,
@@ -977,7 +982,7 @@ func resolveRecursiveCollectionBatchDepth(
 				covered[nodeIndex] = struct{}{}
 			}
 		}
-		if len(covered) <= 1 {
+		if len(covered) == 0 {
 			continue
 		}
 
@@ -988,7 +993,7 @@ func resolveRecursiveCollectionBatchDepth(
 			}
 			coveredIndexes = append(coveredIndexes, nodeIndex)
 		}
-		if len(coveredIndexes) <= 1 {
+		if len(coveredIndexes) == 0 {
 			continue
 		}
 		sort.Ints(coveredIndexes)
@@ -1053,6 +1058,56 @@ func resolveRecursiveCollectionBatchDepth(
 		}
 	}
 	return append(resolved, replacements...), nil
+}
+
+// Different semantic artifact actions can resolve to the exact same outer
+// batch invocation. Execute that implementation once while retaining every
+// semantic target and dependency represented by it.
+func mergeEquivalentBatchImplementations(nodes []*Action) []*Action {
+	merged := make([]*Action, 0, len(nodes))
+	for _, node := range nodes {
+		index := slices.IndexFunc(merged, func(existing *Action) bool {
+			return batchImplementationsEqual(existing, node)
+		})
+		if index < 0 {
+			merged = append(merged, node)
+			continue
+		}
+
+		existing := merged[index]
+		for _, row := range node.target.rows {
+			if slices.ContainsFunc(existing.target.rows, func(candidate *artifactRow) bool {
+				return artifactRowsEqual(candidate, row)
+			}) {
+				continue
+			}
+			existing.target.rows = append(existing.target.rows, row.Clone())
+		}
+		sort.SliceStable(existing.target.rows, func(i, j int) bool {
+			return compareCoordinateRows(
+				existing.target.rows[i].coordinates,
+				existing.target.rows[j].coordinates,
+			) < 0
+		})
+		existing.afterIDs = existing.WithAfter(node.afterIDs).afterIDs
+	}
+	return merged
+}
+
+func batchImplementationsEqual(left, right *Action) bool {
+	return left != nil &&
+		right != nil &&
+		left.collectionBatched &&
+		right.collectionBatched &&
+		left.batchOrigin != nil &&
+		right.batchOrigin != nil &&
+		left.verb == right.verb &&
+		left.sourceModuleName == right.sourceModuleName &&
+		left.rootField == right.rootField &&
+		left.batchOrigin.occurrence == right.batchOrigin.occurrence &&
+		left.batchOrigin.batchType == right.batchOrigin.batchType &&
+		slices.Equal(left.functionPath, right.functionPath) &&
+		left.implementationIdentity() == right.implementationIdentity()
 }
 
 func recursiveBatchNodeOrigin(

@@ -107,6 +107,11 @@ type Tests @collection {
   pub run: Void @check {
     null
   }
+
+  # Batch implementations do not introduce semantic artifact actions.
+  pub audit: Void @check {
+    raise "batch-only audit should not be planned"
+  }
 }
 `))
 
@@ -488,6 +493,41 @@ type Test {
 									{"group": "api", "test": "api-two"},
 									{"group": "cloud", "test": "cloud-one"},
 									{"group": "cloud", "test": "cloud-two"}
+								]}
+							}],
+							"run": null
+						}
+					}
+				}
+			}
+		}`, out)
+
+		out, err = recursive.With(daggerQuery(`{
+			currentWorkspace {
+				artifacts {
+					filterCoordinates(dimension: "go-group", values: ["api"]) {
+						plan(verb: CHECK, include: ["go-test:test"]) {
+							nodes {
+								collectionBatched
+								target { items { coordinates } }
+							}
+							run
+						}
+					}
+				}
+			}
+		}`)).Stdout(ctx)
+		require.NoError(t, err)
+		require.JSONEq(t, `{
+			"currentWorkspace": {
+				"artifacts": {
+					"filterCoordinates": {
+						"plan": {
+							"nodes": [{
+								"collectionBatched": true,
+								"target": {"items": [
+									{"coordinates": ["go-test", "api", "api-one"]},
+									{"coordinates": ["go-test", "api", "api-two"]}
 								]}
 							}],
 							"run": null

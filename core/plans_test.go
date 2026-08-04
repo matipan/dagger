@@ -417,15 +417,15 @@ func TestCollectionPlanBatchesShadowedActions(t *testing.T) {
 
 	plan, err := artifacts.Plan(VerbCheck, nil, nil)
 	require.NoError(t, err)
-	require.Len(t, plan.nodes, 4)
+	require.Len(t, plan.nodes, 3)
 
-	batches := map[string]*Action{}
+	var batch *Action
 	var itemKeys []string
 	for _, node := range plan.nodes {
 		switch node.displayName() {
-		case "audit", "run":
+		case "run":
 			require.True(t, node.CollectionBatched())
-			batches[node.displayName()] = node
+			batch = node
 		case "lint":
 			require.False(t, node.CollectionBatched())
 			require.Len(t, node.target.rows, 1)
@@ -439,16 +439,13 @@ func TestCollectionPlanBatchesShadowedActions(t *testing.T) {
 	}
 
 	require.Equal(t, []string{"integration", "unit"}, itemKeys)
-	require.Contains(t, batches, "audit")
-	require.Contains(t, batches, "run")
-	for _, batch := range batches {
-		require.Len(t, batch.target.rows, 2)
-		require.Equal(
-			t,
-			`go.tests.subset(keys: ["integration","unit"]).batch`,
-			selectorPathString(batch.selectorPath),
-		)
-	}
+	require.NotNil(t, batch)
+	require.Len(t, batch.target.rows, 2)
+	require.Equal(
+		t,
+		`go.tests.subset(keys: ["integration","unit"]).batch`,
+		selectorPathString(batch.selectorPath),
+	)
 }
 
 func TestCollectionPlanTargetsBatchedActionsByType(t *testing.T) {
@@ -488,7 +485,7 @@ func TestCollectionPlanUsesItemActionForSingleton(t *testing.T) {
 	)
 }
 
-func TestCollectionPlanKeepsBatchOnlyActionForSingleton(t *testing.T) {
+func TestCollectionPlanIgnoresBatchOnlyAction(t *testing.T) {
 	artifacts := collectionPlanTestArtifacts(t)
 	artifacts, err := artifacts.FilterCoordinates("go-test", []string{"unit"})
 	require.NoError(t, err)
@@ -499,15 +496,7 @@ func TestCollectionPlanKeepsBatchOnlyActionForSingleton(t *testing.T) {
 		nil,
 	)
 	require.NoError(t, err)
-	require.Len(t, plan.nodes, 1)
-	require.True(t, plan.nodes[0].CollectionBatched())
-	require.Equal(t, "audit", plan.nodes[0].displayName())
-	require.Len(t, plan.nodes[0].target.rows, 1)
-	require.Equal(
-		t,
-		`go.tests.subset(keys: ["unit"]).batch`,
-		selectorPathString(plan.nodes[0].selectorPath),
-	)
+	require.Empty(t, plan.nodes)
 }
 
 func TestCollectionPlanRecursivelyBatchesCompleteSubtrees(t *testing.T) {
@@ -536,7 +525,7 @@ func TestCollectionPlanRecursivelyBatchesCompleteSubtrees(t *testing.T) {
 	)
 }
 
-func TestCollectionPlanKeepsDeeperBatchOnRecursiveTie(t *testing.T) {
+func TestCollectionPlanPrefersOuterBatchOnRecursiveTie(t *testing.T) {
 	artifacts := recursiveCollectionPlanTestArtifacts(t)
 	artifacts, err := artifacts.FilterCoordinates("go-directory", []string{"api/auth"})
 	require.NoError(t, err)
@@ -549,7 +538,12 @@ func TestCollectionPlanKeepsDeeperBatchOnRecursiveTie(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, plan.nodes, 1)
 	require.True(t, plan.nodes[0].CollectionBatched())
-	require.Equal(t, "Tests_Batch", plan.nodes[0].batchOrigin.batchType)
+	require.Equal(t, "Directories_Batch", plan.nodes[0].batchOrigin.batchType)
+	require.Equal(
+		t,
+		`go.modules.get(key: "api").testDirectories.subset(keys: ["api/auth"]).batch`,
+		selectorPathString(plan.nodes[0].selectorPath),
+	)
 }
 
 func TestCollectionPlanRejectsRecursiveBatchForPartialSubtree(t *testing.T) {
@@ -597,6 +591,82 @@ func TestCollectionPlanRecursivelyBatchesCompleteItemSubset(t *testing.T) {
 	)
 }
 
+func TestCollectionPlanMergesSemanticActionsWithSameOuterBatch(t *testing.T) {
+	artifacts := recursiveCollectionPlanTestArtifacts(t)
+	directoryType := planTestObject(t, "GoDirectory", planTestAction(t, "test", VerbCheck))
+	artifacts.objects["GoDirectory"] = objectTypeDef(directoryType.Self())
+
+	for _, directory := range []string{"api/auth", "api/db", "api/server"} {
+		var source *artifactRow
+		for _, row := range artifacts.rows {
+			if row.coordinates[2].Value.String() == directory {
+				source = row
+				break
+			}
+		}
+		require.NotNil(t, source)
+		directoryOrigin := source.collectionLineage[0].Clone()
+		artifacts.rows = append(artifacts.rows, &artifactRow{
+			coordinates: []dagql.Nullable[dagql.String]{
+				dagql.NonNull(dagql.String("go-directory")),
+				dagql.NonNull(dagql.String("api")),
+				dagql.NonNull(dagql.String(directory)),
+				{},
+			},
+			coordinateDimensions: []string{
+				ArtifactTypeDimension,
+				"go-module",
+				"go-directory",
+				"go-test",
+			},
+			rootField:        "go",
+			rootType:         "GoDirectory",
+			sourceModuleName: "go",
+			selectorPath: appendSelector(
+				directoryOrigin.path,
+				dagql.Selector{
+					Field: collectionGetFunctionName,
+					Args: []dagql.NamedInput{{
+						Name:  collectionKeyArgName,
+						Value: dagql.String(directory),
+					}},
+				},
+			),
+			collectionLineage: []artifactCollectionOrigin{directoryOrigin},
+		})
+	}
+	artifacts.allRows = cloneArtifactRows(artifacts.rows)
+
+	filtered, err := artifacts.FilterCoordinates(
+		"go-directory",
+		[]string{"api/auth", "api/db"},
+	)
+	require.NoError(t, err)
+	plan, err := filtered.Plan(VerbCheck, nil, nil)
+	require.NoError(t, err)
+	require.Len(t, plan.nodes, 1)
+
+	batch := plan.nodes[0]
+	require.True(t, batch.CollectionBatched())
+	require.Equal(t, "Directories_Batch", batch.batchOrigin.batchType)
+	require.Len(t, batch.target.rows, 6)
+	require.Equal(t, 2, batch.batchDepth())
+	require.Equal(
+		t,
+		`go.modules.get(key: "api").testDirectories.subset(keys: ["api/auth","api/db"]).batch`,
+		selectorPathString(batch.selectorPath),
+	)
+
+	targetTypes := map[string]int{}
+	for _, row := range batch.target.rows {
+		targetTypes[row.coordinates[0].Value.String()]++
+	}
+	require.Equal(t, map[string]int{
+		"go-directory": 2,
+		"go-test":      4,
+	}, targetTypes)
+}
+
 func TestCollectionPlanDoesNotBatchStaticArtifacts(t *testing.T) {
 	artifacts := collectionPlanTestArtifacts(t)
 	artifacts.rows = append(artifacts.rows, &artifactRow{
@@ -616,7 +686,7 @@ func TestCollectionPlanDoesNotBatchStaticArtifacts(t *testing.T) {
 
 	plan, err := artifacts.Plan(VerbCheck, nil, nil)
 	require.NoError(t, err)
-	require.Len(t, plan.nodes, 6)
+	require.Len(t, plan.nodes, 5)
 
 	var staticActions []*Action
 	var batches []*Action
@@ -630,7 +700,7 @@ func TestCollectionPlanDoesNotBatchStaticArtifacts(t *testing.T) {
 		}
 	}
 	require.Equal(t, []string{"CHECK:lint", "CHECK:run"}, actionKeys(staticActions))
-	require.Len(t, batches, 2)
+	require.Len(t, batches, 1)
 	for _, batch := range batches {
 		require.Len(t, batch.target.rows, 2)
 		for _, row := range batch.target.rows {

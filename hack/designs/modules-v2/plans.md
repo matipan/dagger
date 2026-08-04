@@ -324,6 +324,10 @@ validation and matching.
    that implementation. Ordering comes from explicit composition (`withAfter`)
    or the verb's construction rules.
 
+Collection batch handlers are implementation candidates only. They never
+introduce entrypoints: every planned `functionPath` must first be discovered as
+an action on a selected artifact.
+
 This document defines construction for `check` and `generate`. `UP` and `SHIP`
 add their own rules in later docs, but the shared `Plan.services()`/`service()`
 surface for `UP` is locked here because it shapes the common `Plan` API.
@@ -353,8 +357,7 @@ cardinality decides which immediate implementation runs:
 
 - one selected item compiles its item-level action
 - two or more selected items compile one `collectionBatched = true` action
-- a batch-only handler remains batched for any non-empty selection because no
-  item implementation exists
+- a batch-only handler creates no action and is ignored by plan compilation
 
 Otherwise the compiler emits item-level actions. This makes aggregate artifacts
 efficient without routing an individually targeted artifact through a batch
@@ -375,8 +378,14 @@ artifact's lineage. An outer handler is eligible for an immediate item when the
 selected matching descendant actions below that item are complete. The outer
 handler may receive any eligible immediate-item subset through `subset(keys)`;
 partial descendant selection stays on the deeper implementation. The compiler
-chooses the alternative with fewer actions and keeps the deeper implementation
-on ties.
+continues outward until it reaches the highest eligible matching handler;
+outer handlers win even when they produce the same number of actions.
+
+Semantic actions are compiled independently before implementation deduplication.
+If actions from different artifact types resolve to the same exact batch call,
+the compiler emits one execution node whose target is the union of those
+semantic artifact rows and whose dependencies are the union of their
+dependencies. This does not synthesize an action on either artifact type.
 
 The Action's `target` and `functionPath` continue to describe the semantic
 artifact actions selected by the user. Its engine-internal implementation call

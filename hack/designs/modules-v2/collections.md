@@ -207,6 +207,11 @@ lineage passes through that concrete occurrence. The handler sees only its
 immediate item subset, so it may cover an item subtree only when every matching
 descendant action in that subtree is selected.
 
+The batch namespace defines implementations, not semantic actions. A batch
+handler is considered only when selected artifacts already expose the same
+normalized `functionPath`; a handler that has no matching artifact action is
+directly callable through `batch` but never appears in a plan or CLI target.
+
 ## Extending Artifacts
 
 A collection occurrence contributes to the [Artifacts](./artifacts.md) model:
@@ -268,13 +273,13 @@ one Go test this might be `Modules[api] -> Directories[api/auth] ->
 Tests[TestAuth]`. A batch handler with the same normalized `functionPath` may be
 considered at every collection occurrence in that lineage.
 
-The compiler chooses batch implementations bottom-up:
+The compiler resolves batch implementations bottom-up:
 
 1. compile the exact selected artifact actions
 2. form immediate collection batches
 3. consider each outer collection batch for complete selected item subtrees
-4. choose the representation with fewer actions; on a tie keep the deeper,
-   more specific representation
+4. keep replacing eligible implementations until the outermost matching batch
+   is selected
 
 Selecting some immediate collection items is valid because `subset(keys)`
 communicates that subset to the handler. Selecting only some matching
@@ -290,7 +295,7 @@ $ dagger check --go-module=api --go-test=TestAuth go-test:test
 # runs TestAuth.test directly
 
 $ dagger check --go-module=api --go-directory=api/auth go-test:test
-# runs once via that directory's Tests.batch.test
+# runs once via the module's Directories.batch.test for api/auth
 
 $ dagger check --go-module=api go-test:test
 # runs once via that module's Directories.batch.test
@@ -373,20 +378,30 @@ aggregate command.
 
 ### Batch shadowing
 
-A collection has one effective check set drawn from item checks (on the item
-type) and batch checks (on the `batch` type):
+A collection batch surface implements checks defined by artifacts below it; it
+does not add checks to those artifacts:
 
 - If an item check and a batch check share a name, cardinality chooses the
   implementation: one selected item runs the item check; two or more selected
   items run the batch check once over that subset.
 - Otherwise the item check remains.
-- A batch-only check runs through `batch` for any non-empty subset.
+- A batch-only check remains directly callable through `batch`, but is absent
+  from plans and CLI targets.
 
 The same exact normalized `functionPath` rule applies recursively. An outer
 batch handler may shadow matching actions below its item type only for complete
 selected subtrees, as described in [Recursive batching](#recursive-batching).
+Among eligible handlers, the outermost collection always wins, including when
+the deeper and outer representations have the same action count.
 Defining an ordinary action with the same name on an ancestor object does not
 create a batching relationship.
+
+Artifact types still define their actions independently. If both
+`Directory.test` and descendant `Test.test` are checks and both resolve to the
+same exact `Directories.batch.test` invocation, the plan executes that
+invocation once and retains both semantic target sets. Without a
+`Directory.test @check`, `go-directory:test` does not exist merely because
+`Directories.batch.test` does.
 
 An unshadowed item check runs once per item. Extend the canonical `GoTest` item
 type with a `lint` check alongside its `test`, and let `GoTests.batch` define
