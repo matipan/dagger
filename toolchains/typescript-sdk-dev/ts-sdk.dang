@@ -1,53 +1,107 @@
 pub description = "Toolchain to develop the Dagger Typescript SDK"
 
 type TypescriptSdkDev {
-  pub nodeVersionPrevLts: String! = "22.22.0"
-  pub nodeVersionLts = "24.13.1"
-  pub bunVersion = "1.1.38"
+  pub nodeVersionPrevLts: String!
+  pub nodeVersionLts: String!
+  pub bunVersion: String!
 
   pub workspaceDir: Directory!
-    @defaultPath(path: "/")
-    @ignorePatterns(patterns: [
-      "*",
-      "!sdk/typescript",
-      "sdk/typescript/node_modules",
-    ])
-
-  pub sourcePath: String! = "sdk/typescript"
+  pub sourcePath: String!
 
   """
-  Workspace
+  Typescript source linting.
   """
-  let ws: Workspace!
+  pub lint: Lint!
+
+  """
+  Documentation snippet linting.
+  """
+  pub docs: Docs!
+
+  """
+  SDK tests, keyed by runtime support policy.
+  """
+  pub runtimeTests: RuntimeTests!
+
+  """
+  Workspace generators.
+  """
+  pub generation: Generation!
+
+  """
+  Release validation and publishing.
+  """
+  pub publishing: Release!
+
+  """
+  Shared implementation context.
+  """
+  let context: Context!
+
+  new(
+    nodeVersionPrevLts: String! = "22.22.0",
+    nodeVersionLts: String! = "24.13.1",
+    bunVersion: String! = "1.1.38",
+    workspaceDir: Directory!
+      @defaultPath(path: "/")
+      @ignorePatterns(patterns: [
+        "*",
+        "!sdk/typescript",
+        "sdk/typescript/node_modules",
+      ]),
+    sourcePath: String! = "sdk/typescript",
+    ws: Workspace!,
+  ) {
+    self.nodeVersionPrevLts = nodeVersionPrevLts
+    self.nodeVersionLts = nodeVersionLts
+    self.bunVersion = bunVersion
+    self.workspaceDir = workspaceDir
+    self.sourcePath = sourcePath
+    self.context = Context(
+      nodeVersionPrevLts: nodeVersionPrevLts,
+      nodeVersionLts: nodeVersionLts,
+      bunVersion: bunVersion,
+      workspaceDir: workspaceDir,
+      sourcePath: sourcePath,
+      ws: ws,
+    )
+    self.lint = Lint(context)
+    self.docs = Docs(context)
+    self.runtimeTests = RuntimeTests(context)
+    self.generation = Generation(context)
+    self.publishing = Release(context)
+    self
+  }
 
   pub source: Directory! {
-    workspaceDir.directory(sourcePath)
+    context.source
   }
 
   """
-  Check the formatting of the SDK
-  """
-  pub lintTypescript: Void @check {
-    nodejsDevContainer
-      .withExec(["yarn", "--cwd", sourcePath, "lint"])
-      .sync
+  Check the formatting of the SDK.
 
-    null
+  Kept as a regular function for call compatibility. The independently
+  selectable check is `lint.lintTypescript`.
+  """
+  pub lintTypescript: Void {
+    lint.lintTypescript
   }
 
   """
-  Format the SDK source with prettier via eslint --fix
+  Format the SDK source with prettier via eslint --fix.
+
+  Kept as a regular function for call compatibility. The independently
+  selectable generator is `generation.format`.
   """
-  pub format: Changeset! @generate {
-    nodejsDevContainer
-      .withExec(["yarn", "--cwd", sourcePath, "fmt"])
-      .directory(".")
-      .withoutDirectory(sourcePath + "/node_modules")
-      .changes(workspaceDir)
+  pub format: Changeset! {
+    generation.format
   }
 
   """
-  Check the formatting of Typescript docs snippets
+  Check the formatting of Typescript docs snippets.
+
+  Kept as a regular function for call compatibility. The independently
+  selectable check is `docs.lintSnippets`.
   """
   pub lintDocsSnippets(
     docsWorkspace: Directory! @defaultPath(path: "/") @ignorePatterns(patterns: [
@@ -59,77 +113,284 @@ type TypescriptSdkDev {
       "!**/*prettier*",
       "!**/*eslint*",
     ]),
-  ): Void @check {
-    let path = "docs/current_docs"
-    nodejsDevContainer
-      # Add docs snippets on top of the already-mounted SDK source
-      .withDirectory(".", docsWorkspace)
-      .withExec(["yarn", "--cwd", sourcePath, "docs:lint"])
-      .sync
-
-    null
+  ): Void {
+    docs.lintSnippets(docsWorkspace)
   }
 
   """
-  Test the SDK with LTS version of Node
+  Test the SDK with the LTS version of Node.
+
+  Kept as a regular function for call compatibility. The independently
+  selectable check is the `node-lts` item in `runtimeTests`.
   """
-  pub testNodejsLts: Void @check {
-    testNodejs(nodeVersionLts)
+  pub testNodejsLts: Void {
+    context.testNodejs(nodeVersionLts)
   }
 
   """
-  Test the SDK with previous LTS version of Node
+  Test the SDK with the previous LTS version of Node.
+
+  Kept as a regular function for call compatibility. The independently
+  selectable check is the `node-prev-lts` item in `runtimeTests`.
   """
-  pub testNodejsPrevLts: Void @check {
-    testNodejs(nodeVersionPrevLts)
+  pub testNodejsPrevLts: Void {
+    context.testNodejs(nodeVersionPrevLts)
   }
 
   """
-  Test the SDK with the given version of NodeJS
+  Test the SDK with the given version of NodeJS.
   """
   pub testNodejs(nodeVersion: String!): Void {
-    daggerEngine(ws: self.ws)
-      .installClient(nodejsDevContainer(nodeVersion))
-      .withWorkdir(sourcePath)
-      .withEnvVariable("NODE_OPTIONS", "--import @dagger.io/mocha/register")
-      .withExec(["yarn", "test:node", "-i", "-g", "Automatic Provisioned CLI Binary"])
-      .sync
-
-    null
+    context.testNodejs(nodeVersion)
   }
 
   """
-  Test the SDK with BunJS
-  """
-  pub testBunjs: Void @check {
-    daggerEngine(ws: self.ws)
-      .installClient(bunjsDevContainer)
-      .withWorkdir(sourcePath)
-      .withExec(["bun", "test:bun", "-i", "-g", "Automatic Provisioned CLI Binary"])
-      .sync
+  Test the SDK with BunJS.
 
-    null
+  Kept as a regular function for call compatibility. The independently
+  selectable check is the `bun` item in `runtimeTests`.
+  """
+  pub testBunjs: Void {
+    context.testBunjs
   }
 
   """
-  Generate the Typescript client library
+  Generate the Typescript client library.
+
+  Kept as a regular function for call compatibility. The independently
+  selectable generator is `generation.clientLibrary`.
+  """
+  pub clientLibrary: Changeset! {
+    generation.clientLibrary
+  }
+
+  """
+  Validate a release without publishing it.
+
+  Kept as a regular function for call compatibility. The independently
+  selectable check is `publishing.releaseDryRun`.
+  """
+  pub releaseDryRun: Void {
+    publishing.releaseDryRun
+  }
+
+  pub release(
+    """
+    Source git tag to release
+    """
+    sourceTag: String!,
+    """
+    NPM authentication token
+    """
+    npmToken: Secret,
+    """
+    Execute a dry-run release, with no side effects
+    """
+    dryRun: Boolean,
+    """
+    NPM registry URL to publish to.
+    """
+    npmRegistryURL: String! = "",
+  ): Void {
+    publishing.release(
+      sourceTag: sourceTag,
+      npmToken: npmToken,
+      dryRun: dryRun,
+      npmRegistryURL: npmRegistryURL,
+    )
+  }
+
+  pub isSemver(version: String!): Boolean! {
+    context.isSemver(version)
+  }
+
+  # Build a nodejs dev environment, with the SDK source code mounted and its dependencies installed
+  pub nodejsDevContainer(nodeVersion: String! = nodeVersionPrevLts): Container! {
+    context.nodejsDevContainer(nodeVersion)
+  }
+
+  # Build a nodejs base image, without any source code mounted
+  pub nodejsBase(nodeVersion: String! = nodeVersionPrevLts): Container! {
+    context.nodejsBase(nodeVersion)
+  }
+
+  pub bunjsDevContainer: Container! {
+    context.bunjsDevContainer
+  }
+
+  pub binary: File! {
+    context.binary
+  }
+}
+
+"""
+Typescript source checks.
+"""
+type Lint {
+  let context: Context!
+
+  new(context: Context!) {
+    self.context = context
+    self
+  }
+
+  """
+  Check the formatting of the SDK.
+  """
+  pub lintTypescript: Void @check {
+    context.lintTypescript
+  }
+}
+
+"""
+Checks for documentation that uses the Typescript SDK.
+"""
+type Docs {
+  let context: Context!
+
+  new(context: Context!) {
+    self.context = context
+    self
+  }
+
+  """
+  Check the formatting of Typescript docs snippets.
+  """
+  pub lintSnippets(
+    docsWorkspace: Directory! @defaultPath(path: "/") @ignorePatterns(patterns: [
+      "*",
+      "!**/*.mts",
+      "!**/*.mjs",
+      "!**/*.ts",
+      "!**/*.js",
+      "!**/*prettier*",
+      "!**/*eslint*",
+    ]),
+  ): Void @check {
+    context.lintDocsSnippets(docsWorkspace)
+  }
+}
+
+"""
+The supported runtime test matrix.
+
+The stable keys describe support policy, not exact versions. This keeps CI
+selectors stable when an LTS or Bun version changes.
+"""
+type RuntimeTests @collection {
+  pub keys: [String!]! @keys
+  let context: Context!
+
+  new(context: Context!) {
+    self.keys = ["node-prev-lts", "node-lts", "bun"]
+    self.context = context
+    self
+  }
+
+  pub get(name: String!): RuntimeTest! @get {
+    if (name == "node-prev-lts") {
+      RuntimeTest(
+        context: context,
+        name: name,
+        runtime: "node",
+        version: context.nodeVersionPrevLts,
+      )
+    } else if (name == "node-lts") {
+      RuntimeTest(
+        context: context,
+        name: name,
+        runtime: "node",
+        version: context.nodeVersionLts,
+      )
+    } else if (name == "bun") {
+      RuntimeTest(
+        context: context,
+        name: name,
+        runtime: "bun",
+        version: context.bunVersion,
+      )
+    } else {
+      raise "unknown Typescript SDK runtime test: " + name
+    }
+  }
+}
+
+"""
+One independently selectable runtime test.
+"""
+type RuntimeTest {
+  pub name: String!
+  pub runtime: String!
+  pub version: String!
+  let context: Context!
+
+  new(
+    context: Context!,
+    name: String!,
+    runtime: String!,
+    version: String!,
+  ) {
+    self.context = context
+    self.name = name
+    self.runtime = runtime
+    self.version = version
+    self
+  }
+
+  """
+  Test the SDK with this runtime and version.
+  """
+  pub test: Void @check {
+    if (runtime == "node") {
+      context.testNodejs(version)
+    } else if (runtime == "bun") {
+      context.testBunjs
+    } else {
+      raise "unsupported Typescript SDK runtime: " + runtime
+    }
+  }
+}
+
+"""
+Independently selectable workspace generators.
+"""
+type Generation {
+  let context: Context!
+
+  new(context: Context!) {
+    self.context = context
+    self
+  }
+
+  """
+  Format the SDK source with prettier via eslint --fix.
+  """
+  pub format: Changeset! @generate {
+    context.format
+  }
+
+  """
+  Generate the Typescript client library.
   """
   pub clientLibrary: Changeset! @generate {
-    let ctr = nodejsBase(nodeVersionPrevLts)
-      .withMountedDirectory(".", workspaceDir)
-      .withExec(["yarn", "--cwd", sourcePath, "install"])
-    ctr = daggerEngine(ws: self.ws).installClient(ctr)
-    ctr
-      .withFile("/usr/local/bin/codegen", codegen(ws: self.ws).binary)
-      .withExec(["codegen", "generate-library", "--lang", "typescript", "-o", "./sdk/typescript/src/api/"])
-      .withExec(["sh", "-c", "yarn --cwd " + sourcePath + " eslint --max-warnings=0 --fix ./src/api/"])
-      .directory(".")
-      # FIXME: more efficient way to exclude node_modules from the diff?
-      .withoutDirectory(sourcePath + "/node_modules")
-      # FIXME: since we know this is purely additive, compare to empty dir for more efficient diff?
-      .changes(workspaceDir)
+    context.clientLibrary
+  }
+}
+
+"""
+Release validation and publishing.
+"""
+type Release {
+  let context: Context!
+
+  new(context: Context!) {
+    self.context = context
+    self
   }
 
+  """
+  Validate a release without publishing it.
+  """
   pub releaseDryRun: Void @check {
     release(
       dryRun: true,
@@ -155,6 +416,116 @@ type TypescriptSdkDev {
     """
     NPM registry URL to publish to.
     """
+    npmRegistryURL: String! = "",
+  ): Void {
+    context.release(
+      sourceTag: sourceTag,
+      npmToken: npmToken,
+      dryRun: dryRun,
+      npmRegistryURL: npmRegistryURL,
+    )
+  }
+}
+
+"""
+Shared implementation for the Typescript SDK artifacts.
+"""
+type Context {
+  pub nodeVersionPrevLts: String!
+  pub nodeVersionLts: String!
+  pub bunVersion: String!
+  pub workspaceDir: Directory!
+  pub sourcePath: String!
+  let ws: Workspace!
+
+  new(
+    nodeVersionPrevLts: String!,
+    nodeVersionLts: String!,
+    bunVersion: String!,
+    workspaceDir: Directory!,
+    sourcePath: String!,
+    ws: Workspace!,
+  ) {
+    self.nodeVersionPrevLts = nodeVersionPrevLts
+    self.nodeVersionLts = nodeVersionLts
+    self.bunVersion = bunVersion
+    self.workspaceDir = workspaceDir
+    self.sourcePath = sourcePath
+    self.ws = ws
+    self
+  }
+
+  pub source: Directory! {
+    workspaceDir.directory(sourcePath)
+  }
+
+  pub lintTypescript: Void {
+    nodejsDevContainer
+      .withExec(["yarn", "--cwd", sourcePath, "lint"])
+      .sync
+
+    null
+  }
+
+  pub format: Changeset! {
+    nodejsDevContainer
+      .withExec(["yarn", "--cwd", sourcePath, "fmt"])
+      .directory(".")
+      .withoutDirectory(sourcePath + "/node_modules")
+      .changes(workspaceDir)
+  }
+
+  pub lintDocsSnippets(docsWorkspace: Directory!): Void {
+    nodejsDevContainer
+      # Add docs snippets on top of the already-mounted SDK source
+      .withDirectory(".", docsWorkspace)
+      .withExec(["yarn", "--cwd", sourcePath, "docs:lint"])
+      .sync
+
+    null
+  }
+
+  pub testNodejs(nodeVersion: String!): Void {
+    daggerEngine(ws: self.ws)
+      .installClient(nodejsDevContainer(nodeVersion))
+      .withWorkdir(sourcePath)
+      .withEnvVariable("NODE_OPTIONS", "--import @dagger.io/mocha/register")
+      .withExec(["yarn", "test:node", "-i", "-g", "Automatic Provisioned CLI Binary"])
+      .sync
+
+    null
+  }
+
+  pub testBunjs: Void {
+    daggerEngine(ws: self.ws)
+      .installClient(bunjsDevContainer)
+      .withWorkdir(sourcePath)
+      .withExec(["bun", "test:bun", "-i", "-g", "Automatic Provisioned CLI Binary"])
+      .sync
+
+    null
+  }
+
+  pub clientLibrary: Changeset! {
+    let ctr = nodejsBase(nodeVersionPrevLts)
+      .withMountedDirectory(".", workspaceDir)
+      .withExec(["yarn", "--cwd", sourcePath, "install"])
+    ctr = daggerEngine(ws: self.ws).installClient(ctr)
+    ctr
+      .withFile("/usr/local/bin/codegen", codegen(ws: self.ws).binary)
+      .withExec(["codegen", "generate-library", "--lang", "typescript", "-o", "./sdk/typescript/src/api/"])
+      .withExec(["sh", "-c", "yarn --cwd " + sourcePath + " eslint --max-warnings=0 --fix ./src/api/"])
+      .directory(".")
+      # FIXME: more efficient way to exclude node_modules from the diff?
+      .withoutDirectory(sourcePath + "/node_modules")
+      # FIXME: since we know this is purely additive, compare to empty dir for more efficient diff?
+      .changes(workspaceDir)
+  }
+
+  pub release(
+    sourceTag: String!,
+    npmToken: Secret,
+    dryRun: Boolean,
     npmRegistryURL: String! = "",
   ): Void {
     let version = versionFromTag(sourceTag)
@@ -209,7 +580,6 @@ type TypescriptSdkDev {
   }
 
   # Build a nodejs dev environment, with the SDK source code mounted and its dependencies installed
-  # FIXME: use baseNodejs() to avoid duplication
   pub nodejsDevContainer(nodeVersion: String! = nodeVersionPrevLts): Container! {
     container
       # ⚠️  Keep this in sync with the engine version defined in package.json
