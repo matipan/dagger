@@ -170,8 +170,13 @@ func workspaceArtifactsSnapshot(ctx context.Context) (*core.Artifacts, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get workspace schema: %w", err)
 	}
-	typeDefs, err := served.TypeDefs(ctx, dag)
-	if err != nil {
+	// Module TypeDefs can contain detached projection results parented to the
+	// current call. Select them through dagql so currentTypeDefs is published
+	// and owns those children before closure expansion attaches nested types.
+	var typeDefs dagql.ObjectResultArray[*core.TypeDef]
+	if err := dag.Select(ctx, dag.Root(), &typeDefs, dagql.Selector{
+		Field: "currentTypeDefs",
+	}); err != nil {
 		return nil, fmt.Errorf("get workspace type definitions: %w", err)
 	}
 

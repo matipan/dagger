@@ -11,6 +11,7 @@ import (
 
 	"github.com/dagger/dagger/dagql"
 	"github.com/dagger/dagger/dagql/call"
+	"github.com/dagger/dagger/util/hashutil"
 )
 
 const (
@@ -30,6 +31,7 @@ type collectionProjector struct {
 	batchTypeDefCache map[string]*TypeDef
 	baseCall          *dagql.ResultCall
 	baseCallErr       error
+	projectionDigest  string
 	resultIndex       int
 }
 
@@ -44,7 +46,6 @@ func newCollectionProjector(
 		objectDefsByName:  make(map[string]*TypeDef, len(mod.ObjectDefs)),
 		objectDefCache:    map[string]*TypeDef{},
 		batchTypeDefCache: map[string]*TypeDef{},
-		baseCall:          dagql.CurrentCall(ctx),
 	}
 	for _, defResult := range mod.ObjectDefs {
 		def := defResult.Self()
@@ -52,27 +53,53 @@ func newCollectionProjector(
 			projector.objectDefsByName[object.Name] = def
 		}
 	}
-	if projector.baseCall == nil {
-		for _, defs := range []dagql.ObjectResultArray[*TypeDef]{
-			mod.ObjectDefs,
-			mod.InterfaceDefs,
-			mod.EnumDefs,
-		} {
-			for _, defResult := range defs {
-				baseCall, err := defResult.ResultCall()
-				if err != nil {
-					if projector.baseCallErr == nil {
-						projector.baseCallErr = err
-					}
-					continue
+	projectionInputs := []string{
+		"collection-projection",
+		mod.NameField,
+		mod.OriginalName,
+		mod.AsModuleVariantDigest,
+	}
+	for _, defs := range []dagql.ObjectResultArray[*TypeDef]{
+		mod.ObjectDefs,
+		mod.InterfaceDefs,
+		mod.EnumDefs,
+	} {
+		for _, defResult := range defs {
+			baseCall, err := defResult.ResultCall()
+			if err != nil {
+				if projector.baseCallErr == nil {
+					projector.baseCallErr = err
 				}
+				continue
+			}
+			if projector.baseCall == nil {
 				projector.baseCall = baseCall
 				projector.baseCallErr = nil
-				break
 			}
-			if projector.baseCall != nil {
-				break
+			digest, err := defResult.RecipeDigest(ctx)
+			if err == nil {
+				projectionInputs = append(projectionInputs, digest.String())
+				continue
 			}
+			// Lightweight unit schemas do not always install an engine cache.
+			// Keep their projection identity structural too.
+			encoded, encodeErr := json.Marshal(baseCall)
+			if encodeErr != nil {
+				projector.baseCallErr = fmt.Errorf(
+					"encode module type definition call after digest error %v: %w",
+					err,
+					encodeErr,
+				)
+				continue
+			}
+			projectionInputs = append(projectionInputs, string(encoded))
+		}
+	}
+	projector.projectionDigest = hashutil.HashStrings(projectionInputs...).String()
+	if projector.baseCall == nil {
+		projector.baseCall = dagql.CurrentCall(ctx)
+		if projector.baseCall != nil {
+			projector.baseCallErr = nil
 		}
 	}
 	return projector
@@ -102,6 +129,13 @@ func collectionProjectionResult[T dagql.Typed](
 			label,
 		)
 	}
+	callFrame.Args = []*dagql.ResultCallArg{{
+		Name: "projectionDigest",
+		Value: &dagql.ResultCallLiteral{
+			Kind:        dagql.ResultCallLiteralKindString,
+			StringValue: p.projectionDigest,
+		},
+	}}
 	return dagql.NewObjectResultForCall(value, p.dag, callFrame)
 }
 

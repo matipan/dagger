@@ -117,11 +117,13 @@ func (s *plansSchema) plan(
 	}
 	var plan *core.Plan
 	if args.Verb == core.VerbCheck {
-		includeChecks, includeGenerators, err := generatedCheckSelection(ctx, args.GeneratedChecks)
+		var includeChecks, includeGenerators bool
+		includeChecks, includeGenerators, err = generatedCheckSelection(ctx, args.GeneratedChecks)
 		if err != nil {
 			return nil, err
 		}
-		generateSourceExcludes, err := planSourceExcludes(ctx, core.VerbGenerate)
+		var generateSourceExcludes map[string][]core.TargetPattern
+		generateSourceExcludes, err = planSourceExcludes(ctx, core.VerbGenerate)
 		if err != nil {
 			return nil, err
 		}
