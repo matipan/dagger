@@ -76,13 +76,41 @@ This will:
 #### Integration testing
 
 - Run all core tests: `dagger check test-split-test-group:test`
+- Run one core test group: `dagger check --test-split-test-group=modules test-split-test-group:test`
+- Inspect the concurrent execution nodes first: `dagger check --plan test-split-test-group:test`
 - Run available core tests: `dagger call engine-dev tests`
 - Run a specific core test (eg. `TestNamespacing` in the `TestModule` suite): `dagger call engine-dev test --pkg="./core/integration" --run="^TestModule/TestNamespacing$"`
 - Run SDK tests: `dagger check *sdk:*test*`
 
 #### Linting
 
-To run all linters: `dagger checks *:lint`
+To run all linters: `dagger check '**:*lint*'`
+
+#### Language artifact matrices
+
+Modules v2 keeps semantic actions separate from matrix coordinates. Use artifact
+flags to select an item and a type-rooted target to select its action:
+
+```shell
+# One Go top-level test. The default plan batches compatible selected tests.
+dagger check \
+  --golang-module=e2e/installers \
+  --golang-directory=e2e/installers \
+  --golang-test=TestBashScript \
+  golang-test:test
+
+# Python version matrix (one item or all supported versions).
+dagger check --python-sdk-python-test=3.12 python-sdk-python-test:unit
+dagger check python-sdk-python-test:**
+
+# Stable TypeScript runtime-policy keys do not change when versions move.
+dagger check --typescript-sdk-runtime-test=node-lts typescript-sdk-runtime-test:test
+```
+
+Use `dagger check -l <type>:**` to list valid coordinates. Use `--plan`
+instead of `-l` to inspect batching and dependencies. Generated output uses the
+same selectors and Plan compiler: `dagger check --generate <pattern>` only runs
+generators and fails when their Changesets are not empty.
 
 #### Local docs server
 
