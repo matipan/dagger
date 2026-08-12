@@ -98,5 +98,5 @@ jobs:
           # is a golden example for the same Modules v2 implementation.
           commit: ${{ github.sha }}
           verb: check
-          args: --require-load ${{ matrix.args }}
+          args: ${{ matrix.args }}
           cloud-token: dag_dagger_sBIv6DsjNerWvTqt2bSFeigBUqWxp9bhh3ONSSgeFnw
