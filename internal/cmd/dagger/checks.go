@@ -89,11 +89,19 @@ Examples:
 				if err != nil {
 					return err
 				}
+				generatedChecks := dagger.GeneratedChecksAuto
+				switch {
+				case checksNoGenerate:
+					generatedChecks = dagger.GeneratedChecksExclude
+				case checksOnlyGenerate:
+					generatedChecks = dagger.GeneratedChecksOnly
+				}
 				plan := artifacts.Plan(
 					dagger.VerbCheck,
 					dagger.ArtifactsPlanOpts{
-						Include: include,
-						Exclude: targetPatterns(checksSkip),
+						Include:         include,
+						Exclude:         targetPatterns(checksSkip),
+						GeneratedChecks: generatedChecks,
 					},
 				)
 				if checksListMode {

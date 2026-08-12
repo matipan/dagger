@@ -212,6 +212,40 @@ func TestArtifactsPlanFiltersAndOrdersActions(t *testing.T) {
 	require.Equal(t, []string{"go-toolchain-state:CHECK:validate"}, planNodeKeys(t, plan))
 }
 
+func TestArtifactsCheckPlanIncludesGeneratorsAsChecks(t *testing.T) {
+	artifacts := planTestArtifacts(t)
+
+	plan, err := artifacts.CheckPlan(nil, nil, nil, nil, true, true)
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"go:CHECK:generate",
+		"go:CHECK:lint",
+		"go:CHECK:tests:unit",
+		"go-toolchain-state:CHECK:sync",
+		"go-toolchain-state:CHECK:validate",
+		"sdk-release:CHECK:publish",
+	}, planNodeKeys(t, plan))
+	for index, node := range plan.nodes {
+		require.Equal(t, index == 0 || index == 3, node.generatedAsCheck)
+	}
+
+	generators, err := artifacts.CheckPlan(
+		[]TargetPattern{"go:generate"},
+		nil,
+		nil,
+		nil,
+		false,
+		true,
+	)
+	require.NoError(t, err)
+	require.Equal(t, []string{"go:CHECK:generate"}, planNodeKeys(t, generators))
+	require.True(t, generators.nodes[0].generatedAsCheck)
+
+	checks, err := artifacts.CheckPlan(nil, nil, nil, nil, true, false)
+	require.NoError(t, err)
+	require.NotContains(t, planNodeKeys(t, checks), "go:CHECK:generate")
+}
+
 func TestArtifactsPlanAppliesSourceSpecificExcludes(t *testing.T) {
 	artifacts := planTestArtifacts(t)
 

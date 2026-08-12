@@ -245,6 +245,9 @@ type Artifacts implements Node {
 
     """Exclude matching artifact fields or lifecycle action paths."""
     exclude: [TargetPattern!] = []
+
+    """How generators participate when compiling a CHECK plan."""
+    generatedChecks: GeneratedChecksMode = AUTO
   ): Plan!
 }
 
@@ -3722,6 +3725,23 @@ scalar FunctionCallID
 
 """A unique identifier for an object."""
 scalar FunctionID
+
+"""How generators participate in a CHECK plan."""
+enum GeneratedChecksMode {
+  """
+  Honor the workspace check-generated setting, which defaults to enabled.
+  """
+  AUTO
+
+  """Run checks and fail when generators report pending changes."""
+  INCLUDE
+
+  """Run checks without generators."""
+  EXCLUDE
+
+  """Only fail when generators report pending changes."""
+  ONLY
+}
 
 """The result of running an SDK's codegen."""
 type GeneratedCode implements Node {

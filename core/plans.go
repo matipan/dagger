@@ -36,6 +36,46 @@ var (
 	VerbUp       = Verbs.Register("UP", "Start an artifact as a long-running service.")
 )
 
+// GeneratedChecksMode controls how generators participate in a CHECK plan.
+type GeneratedChecksMode string
+
+var GeneratedChecksModes = dagql.NewEnum[GeneratedChecksMode]()
+
+var (
+	GeneratedChecksAuto = GeneratedChecksModes.Register(
+		"AUTO",
+		"Honor the workspace check-generated setting, which defaults to enabled.",
+	)
+	GeneratedChecksInclude = GeneratedChecksModes.Register(
+		"INCLUDE",
+		"Run checks and fail when generators report pending changes.",
+	)
+	GeneratedChecksExclude = GeneratedChecksModes.Register(
+		"EXCLUDE",
+		"Run checks without generators.",
+	)
+	GeneratedChecksOnly = GeneratedChecksModes.Register(
+		"ONLY",
+		"Only fail when generators report pending changes.",
+	)
+)
+
+func (mode GeneratedChecksMode) Type() *ast.Type {
+	return &ast.Type{NamedType: "GeneratedChecksMode", NonNull: true}
+}
+
+func (mode GeneratedChecksMode) TypeDescription() string {
+	return "How generators participate in a CHECK plan."
+}
+
+func (mode GeneratedChecksMode) Decoder() dagql.InputDecoder {
+	return GeneratedChecksModes
+}
+
+func (mode GeneratedChecksMode) ToLiteral() call.Literal {
+	return GeneratedChecksModes.Literal(mode)
+}
+
 func (verb Verb) Type() *ast.Type {
 	return &ast.Type{NamedType: "Verb", NonNull: true}
 }
@@ -107,6 +147,7 @@ type Action struct {
 	batchOrigin       *artifactCollectionOrigin
 	afterIDs          []dagql.ID[*Action]
 	portMappings      []PortForward
+	generatedAsCheck  bool
 }
 
 func (*Action) Type() *ast.Type {
@@ -260,6 +301,7 @@ func (action *Action) telemetryAttributes() []attribute.KeyValue {
 		Implementation    string
 		SourceModule      string
 		CollectionBatched bool
+		GeneratedAsCheck  bool
 		TargetDigest      string
 	}{
 		Verb:              action.verb,
@@ -267,6 +309,7 @@ func (action *Action) telemetryAttributes() []attribute.KeyValue {
 		Implementation:    action.implementationIdentity(),
 		SourceModule:      action.sourceModuleName,
 		CollectionBatched: action.collectionBatched,
+		GeneratedAsCheck:  action.generatedAsCheck,
 		TargetDigest:      target.digest,
 	})
 
@@ -803,6 +846,62 @@ func (artifacts *Artifacts) PlanWithSourceExcludes(
 	return &Plan{verb: verb, nodes: nodes}, nil
 }
 
+// CheckPlan compiles checks and, when requested, generators that validate the
+// workspace by failing if they produce a non-empty changeset.
+func (artifacts *Artifacts) CheckPlan(
+	include []TargetPattern,
+	exclude []TargetPattern,
+	checkSourceExcludes map[string][]TargetPattern,
+	generateSourceExcludes map[string][]TargetPattern,
+	includeChecks bool,
+	includeGenerators bool,
+) (*Plan, error) {
+	plan := &Plan{verb: VerbCheck}
+	if includeChecks {
+		checks, err := artifacts.PlanWithSourceExcludes(
+			VerbCheck,
+			include,
+			exclude,
+			checkSourceExcludes,
+		)
+		if err != nil {
+			return nil, err
+		}
+		plan.nodes = append(plan.nodes, checks.nodes...)
+	}
+	if includeGenerators {
+		generators, err := artifacts.PlanWithSourceExcludes(
+			VerbGenerate,
+			include,
+			exclude,
+			generateSourceExcludes,
+		)
+		if err != nil {
+			return nil, err
+		}
+		for _, generator := range generators.nodes {
+			generator = generator.Clone()
+			generator.verb = VerbCheck
+			generator.generatedAsCheck = true
+			if slices.ContainsFunc(plan.nodes, func(existing *Action) bool {
+				return actionsEqual(existing, generator)
+			}) {
+				continue
+			}
+			plan.nodes = append(plan.nodes, generator)
+		}
+	}
+	sort.SliceStable(plan.nodes, func(i, j int) bool {
+		left := plan.nodes[i].target.rows[0]
+		right := plan.nodes[j].target.rows[0]
+		if cmp := compareCoordinateRows(left.coordinates, right.coordinates); cmp != 0 {
+			return cmp < 0
+		}
+		return plan.nodes[i].displayName() < plan.nodes[j].displayName()
+	})
+	return plan, nil
+}
+
 // Batch candidates have already been merged by collection occurrence. Resolve
 // singleton candidates back to their semantic item implementation.
 func resolveSingletonCollectionBatches(nodes []*Action) error {
@@ -1203,7 +1302,7 @@ func (action *Action) Run(ctx context.Context) error {
 	switch action.verb {
 	case VerbCheck:
 		return plan.runGraph(ctx, dependencies, false, func(ctx context.Context, _ int, node *Action) error {
-			return node.runCheck(ctx)
+			return node.runOwn(ctx)
 		})
 	case VerbGenerate:
 		changes, err := plan.changesWithDependencies(
@@ -1225,6 +1324,20 @@ func (action *Action) Run(ctx context.Context) error {
 func (action *Action) runOwn(ctx context.Context) error {
 	switch action.verb {
 	case VerbCheck:
+		if action.generatedAsCheck {
+			changes, err := action.generateChanges(ctx)
+			if err != nil {
+				return err
+			}
+			empty, err := changes.IsEmpty(ctx)
+			if err != nil {
+				return err
+			}
+			if !empty {
+				return fmt.Errorf("generated files are out of date for %q", action.displayName())
+			}
+			return nil
+		}
 		return action.runCheck(ctx)
 	case VerbGenerate:
 		changes, err := action.generateChanges(ctx)

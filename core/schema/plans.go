@@ -17,6 +17,7 @@ var _ SchemaResolvers = &plansSchema{}
 
 func (s *plansSchema) Install(srv *dagql.Server) {
 	core.Verbs.Install(srv)
+	core.GeneratedChecksModes.Install(srv)
 	srv.InstallScalar(core.TargetPattern(""))
 
 	dagql.Fields[*core.Artifacts]{
@@ -26,6 +27,7 @@ func (s *plansSchema) Install(srv *dagql.Server) {
 				dagql.Arg("verb").Doc("The lifecycle operation to compile."),
 				dagql.Arg("include").Doc("Only include matching artifact fields or lifecycle action paths."),
 				dagql.Arg("exclude").Doc("Exclude matching artifact fields or lifecycle action paths."),
+				dagql.Arg("generatedChecks").Doc("How generators participate when compiling a CHECK plan."),
 			),
 	}.Install(srv)
 
@@ -88,9 +90,10 @@ func (s *plansSchema) Install(srv *dagql.Server) {
 }
 
 type artifactsPlanArgs struct {
-	Verb    core.Verb
-	Include dagql.ArrayInput[core.TargetPattern] `default:"[]"`
-	Exclude dagql.ArrayInput[core.TargetPattern] `default:"[]"`
+	Verb            core.Verb
+	Include         dagql.ArrayInput[core.TargetPattern] `default:"[]"`
+	Exclude         dagql.ArrayInput[core.TargetPattern] `default:"[]"`
+	GeneratedChecks core.GeneratedChecksMode             `default:"AUTO"`
 }
 
 func (s *plansSchema) plan(
@@ -112,12 +115,32 @@ func (s *plansSchema) plan(
 	if err != nil {
 		return nil, err
 	}
-	plan, err := materialized.PlanWithSourceExcludes(
-		args.Verb,
-		include,
-		[]core.TargetPattern(args.Exclude),
-		sourceExcludes,
-	)
+	var plan *core.Plan
+	if args.Verb == core.VerbCheck {
+		includeChecks, includeGenerators, err := generatedCheckSelection(ctx, args.GeneratedChecks)
+		if err != nil {
+			return nil, err
+		}
+		generateSourceExcludes, err := planSourceExcludes(ctx, core.VerbGenerate)
+		if err != nil {
+			return nil, err
+		}
+		plan, err = materialized.CheckPlan(
+			include,
+			[]core.TargetPattern(args.Exclude),
+			sourceExcludes,
+			generateSourceExcludes,
+			includeChecks,
+			includeGenerators,
+		)
+	} else {
+		plan, err = materialized.PlanWithSourceExcludes(
+			args.Verb,
+			include,
+			[]core.TargetPattern(args.Exclude),
+			sourceExcludes,
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -130,6 +153,46 @@ func (s *plansSchema) plan(
 		return nil, err
 	}
 	return plan.WithPortMappings(portMappings), nil
+}
+
+func generatedCheckSelection(
+	ctx context.Context,
+	mode core.GeneratedChecksMode,
+) (includeChecks bool, includeGenerators bool, _ error) {
+	if mode != core.GeneratedChecksAuto {
+		return generatedCheckSelectionFromConfig(mode, nil)
+	}
+	query, err := core.CurrentQuery(ctx)
+	if err != nil {
+		return false, false, err
+	}
+	currentWorkspace, err := query.Server.CurrentWorkspace(ctx)
+	if err != nil {
+		return false, false, err
+	}
+	cfg, err := workspaceConfigWithCompatFallback(ctx, currentWorkspace)
+	if err != nil {
+		return false, false, err
+	}
+	return generatedCheckSelectionFromConfig(mode, cfg)
+}
+
+func generatedCheckSelectionFromConfig(
+	mode core.GeneratedChecksMode,
+	cfg *workspace.Config,
+) (includeChecks bool, includeGenerators bool, _ error) {
+	switch mode {
+	case core.GeneratedChecksInclude:
+		return true, true, nil
+	case core.GeneratedChecksExclude:
+		return true, false, nil
+	case core.GeneratedChecksOnly:
+		return false, true, nil
+	case core.GeneratedChecksAuto:
+		return true, cfg == nil || cfg.CheckGenerated == nil || *cfg.CheckGenerated, nil
+	default:
+		return false, false, fmt.Errorf("unknown generated checks mode %q", mode)
+	}
 }
 
 func planSourceExcludes(

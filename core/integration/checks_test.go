@@ -106,6 +106,42 @@ func (ChecksSuite) TestChecksDirectSDK(ctx context.Context, t *testctx.T) {
 	}
 }
 
+func (ChecksSuite) TestGenerateAsChecks(ctx context.Context, t *testctx.T) {
+	c := connect(ctx, t)
+	base, err := checksTestEnv(t, c)
+	require.NoError(t, err)
+	base = base.WithWorkdir("hello-with-generate-checks")
+
+	out, err := base.With(daggerExec("check", "-l")).CombinedOutput(ctx)
+	require.NoError(t, err, out)
+	require.Contains(t, out, "passing-check")
+	require.Contains(t, out, "empty-generate")
+	require.Contains(t, out, "non-empty-generate")
+
+	out, err = base.With(daggerExec("check", "-l", "--no-generate")).CombinedOutput(ctx)
+	require.NoError(t, err, out)
+	require.Contains(t, out, "passing-check")
+	require.NotContains(t, out, "empty-generate")
+	require.NotContains(t, out, "non-empty-generate")
+
+	out, err = base.With(daggerExec("check", "-l", "--generate")).CombinedOutput(ctx)
+	require.NoError(t, err, out)
+	require.NotContains(t, out, "passing-check")
+	require.Contains(t, out, "empty-generate")
+	require.Contains(t, out, "non-empty-generate")
+
+	out, err = base.With(
+		daggerExec("check", "--generate", "hello-with-generate-checks:empty-generate"),
+	).CombinedOutput(ctx)
+	require.NoError(t, err, out)
+
+	out, err = base.With(
+		daggerExecFail("check", "--generate", "hello-with-generate-checks:non-empty-generate"),
+	).CombinedOutput(ctx)
+	require.NoError(t, err)
+	require.Contains(t, out, "generated files are out of date")
+}
+
 func (ChecksSuite) TestChecksNoMatch(ctx context.Context, t *testctx.T) {
 	c := connect(ctx, t)
 	modGen, err := checksTestEnv(t, c)

@@ -1019,6 +1019,8 @@ type ArtifactsPlanOpts struct {
 	Include []TargetPattern
 	// Exclude matching artifact fields or lifecycle action paths.
 	Exclude []TargetPattern
+	// How generators participate when compiling a CHECK plan.
+	GeneratedChecks GeneratedChecksMode
 }
 
 // Compile matching artifact actions into an execution plan.
@@ -1032,6 +1034,10 @@ func (r *Artifacts) Plan(verb Verb, opts ...ArtifactsPlanOpts) *Plan {
 		// `exclude` optional argument
 		if !querybuilder.IsZeroValue(opts[i].Exclude) {
 			q = q.Arg("exclude", opts[i].Exclude)
+		}
+		// `generatedChecks` optional argument
+		if !querybuilder.IsZeroValue(opts[i].GeneratedChecks) {
+			q = q.Arg("generatedChecks", opts[i].GeneratedChecks)
 		}
 	}
 	q = q.Arg("verb", verb)
@@ -19820,6 +19826,77 @@ const (
 	//
 	// Always paired with an EnumTypeDef.
 	TypeDefKindEnum TypeDefKind = TypeDefKindEnumKind
+)
+
+// How generators participate in a CHECK plan.
+type GeneratedChecksMode string
+
+func (GeneratedChecksMode) IsEnum() {}
+
+func (v GeneratedChecksMode) Name() string {
+	switch v {
+	case GeneratedChecksAuto:
+		return "AUTO"
+	case GeneratedChecksInclude:
+		return "INCLUDE"
+	case GeneratedChecksExclude:
+		return "EXCLUDE"
+	case GeneratedChecksOnly:
+		return "ONLY"
+	default:
+		return ""
+	}
+}
+
+func (v GeneratedChecksMode) Value() string {
+	return string(v)
+}
+
+func (v *GeneratedChecksMode) MarshalJSON() ([]byte, error) {
+	if *v == "" {
+		return []byte(`""`), nil
+	}
+	name := v.Name()
+	if name == "" {
+		return nil, fmt.Errorf("invalid enum value %q", *v)
+	}
+	return json.Marshal(name)
+}
+
+func (v *GeneratedChecksMode) UnmarshalJSON(dt []byte) error {
+	var s string
+	if err := json.Unmarshal(dt, &s); err != nil {
+		return err
+	}
+	switch s {
+	case "":
+		*v = ""
+	case "AUTO":
+		*v = GeneratedChecksAuto
+	case "INCLUDE":
+		*v = GeneratedChecksInclude
+	case "EXCLUDE":
+		*v = GeneratedChecksExclude
+	case "ONLY":
+		*v = GeneratedChecksOnly
+	default:
+		return fmt.Errorf("invalid enum value %q", s)
+	}
+	return nil
+}
+
+const (
+	// Honor the workspace check-generated setting, which defaults to enabled.
+	GeneratedChecksAuto GeneratedChecksMode = "AUTO"
+
+	// Run checks and fail when generators report pending changes.
+	GeneratedChecksInclude GeneratedChecksMode = "INCLUDE"
+
+	// Run checks without generators.
+	GeneratedChecksExclude GeneratedChecksMode = "EXCLUDE"
+
+	// Only fail when generators report pending changes.
+	GeneratedChecksOnly GeneratedChecksMode = "ONLY"
 )
 
 // A standardized artifact lifecycle operation.
