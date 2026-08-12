@@ -75,7 +75,7 @@ This will:
 
 #### Integration testing
 
-- Run all core tests: `dagger checks test-split:*`
+- Run all core tests: `dagger check test-split-test-group:test`
 - Run available core tests: `dagger call engine-dev tests`
 - Run a specific core test (eg. `TestNamespacing` in the `TestModule` suite): `dagger call engine-dev test --pkg="./core/integration" --run="^TestModule/TestNamespacing$"`
 - Run SDK tests: `dagger check *sdk:*test*`
