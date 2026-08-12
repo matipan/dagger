@@ -65,3 +65,21 @@ func uv(args ...string) []string {
 func uvRun(args ...string) []string {
 	return append(uv("run"), args...)
 }
+
+func validatePythonVersions(versions []string) error {
+	if len(versions) == 0 {
+		return fmt.Errorf("python versions must not be empty")
+	}
+
+	seen := make(map[string]struct{}, len(versions))
+	for _, version := range versions {
+		if strings.TrimSpace(version) != version || version == "" {
+			return fmt.Errorf("invalid Python version %q", version)
+		}
+		if _, ok := seen[version]; ok {
+			return fmt.Errorf("duplicate Python version %q", version)
+		}
+		seen[version] = struct{}{}
+	}
+	return nil
+}

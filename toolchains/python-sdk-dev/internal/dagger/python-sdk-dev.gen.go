@@ -248,51 +248,6 @@ func (r *PythonSDKDev) Publish(token *Secret, opts ...PythonSDKDevPublishOpts) *
 	}
 }
 
-// Test suite for python 3.10
-func (r *PythonSDKDev) Python310() *PythonSDKDevTestForPythonVersion {
-	q := r.query.Select("python310")
-
-	return &PythonSDKDevTestForPythonVersion{
-		query: q,
-	}
-}
-
-// Test suite for python 3.11
-func (r *PythonSDKDev) Python311() *PythonSDKDevTestForPythonVersion {
-	q := r.query.Select("python311")
-
-	return &PythonSDKDevTestForPythonVersion{
-		query: q,
-	}
-}
-
-// Test suite for python 3.12
-func (r *PythonSDKDev) Python312() *PythonSDKDevTestForPythonVersion {
-	q := r.query.Select("python312")
-
-	return &PythonSDKDevTestForPythonVersion{
-		query: q,
-	}
-}
-
-// Test suite for python 3.13
-func (r *PythonSDKDev) Python313() *PythonSDKDevTestForPythonVersion {
-	q := r.query.Select("python313")
-
-	return &PythonSDKDevTestForPythonVersion{
-		query: q,
-	}
-}
-
-// Test suite for python 3.14
-func (r *PythonSDKDev) Python314() *PythonSDKDevTestForPythonVersion {
-	q := r.query.Select("python314")
-
-	return &PythonSDKDevTestForPythonVersion{
-		query: q,
-	}
-}
-
 // PythonSDKDevReleaseOpts contains options for PythonSDKDev.Release
 type PythonSDKDevReleaseOpts struct {
 	DryRun bool
@@ -386,6 +341,19 @@ func (r *PythonSDKDev) TestPublish(token *Secret, opts ...PythonSDKDevTestPublis
 	q = q.Arg("token", token)
 
 	return &Container{
+		query: q,
+	}
+}
+
+// Tests returns the test matrix keyed by Python version.
+//
+// A collection is used because versions are homogeneous data, not distinct
+// schema roles. This lets another Python project supply its own version set
+// without adding one field or function for each version.
+func (r *PythonSDKDev) Tests() *PythonSDKDevPythonTestMatrix {
+	q := r.query.Select("tests")
+
+	return &PythonSDKDevPythonTestMatrix{
 		query: q,
 	}
 }
@@ -513,23 +481,25 @@ func (r *PythonSDKDevDocs) Preview(opts ...PythonSDKDevDocsPreviewOpts) *Service
 	}
 }
 
-type PythonSDKDevTestForPythonVersion struct { // python-sdk-dev (../../../../:0:0)
+// PythonTest runs a project's tests with one Python version.
+type PythonSDKDevPythonTest struct { // python-sdk-dev (../../../../:0:0)
 	query *querybuilder.Selection
 
-	id   *ID
-	run  *Void
-	slow *Void
-	unit *Void
+	id      *ID
+	run     *Void
+	slow    *Void
+	unit    *Void
+	version *string
 }
 
-func (r *PythonSDKDevTestForPythonVersion) WithGraphQLQuery(q *querybuilder.Selection) *PythonSDKDevTestForPythonVersion {
-	return &PythonSDKDevTestForPythonVersion{
+func (r *PythonSDKDevPythonTest) WithGraphQLQuery(q *querybuilder.Selection) *PythonSDKDevPythonTest {
+	return &PythonSDKDevPythonTest{
 		query: q,
 	}
 }
 
-// A unique identifier for this PythonSdkDevTestForPythonVersion.
-func (r *PythonSDKDevTestForPythonVersion) ID(ctx context.Context) (ID, error) {
+// A unique identifier for this PythonSdkDevPythonTest.
+func (r *PythonSDKDevPythonTest) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
 		return *r.id, nil
 	}
@@ -542,17 +512,17 @@ func (r *PythonSDKDevTestForPythonVersion) ID(ctx context.Context) (ID, error) {
 }
 
 // XXX_GraphQLType is an internal function. It returns the native GraphQL type name
-func (r *PythonSDKDevTestForPythonVersion) XXX_GraphQLType() string {
-	return "PythonSdkDevTestForPythonVersion"
+func (r *PythonSDKDevPythonTest) XXX_GraphQLType() string {
+	return "PythonSdkDevPythonTest"
 }
 
 // XXX_GraphQLIDType is an internal function. It returns the native GraphQL type name for the ID of this object
-func (r *PythonSDKDevTestForPythonVersion) XXX_GraphQLIDType() string {
+func (r *PythonSDKDevPythonTest) XXX_GraphQLIDType() string {
 	return "ID"
 }
 
 // XXX_GraphQLID is an internal function. It returns the underlying type ID
-func (r *PythonSDKDevTestForPythonVersion) XXX_GraphQLID(ctx context.Context) (string, error) {
+func (r *PythonSDKDevPythonTest) XXX_GraphQLID(ctx context.Context) (string, error) {
 	id, err := r.ID(ctx)
 	if err != nil {
 		return "", err
@@ -560,25 +530,25 @@ func (r *PythonSDKDevTestForPythonVersion) XXX_GraphQLID(ctx context.Context) (s
 	return string(id), nil
 }
 
-func (r *PythonSDKDevTestForPythonVersion) MarshalJSON() ([]byte, error) {
+func (r *PythonSDKDevPythonTest) MarshalJSON() ([]byte, error) {
 	id, err := r.ID(marshalCtx)
 	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(id)
 }
-func (r *PythonSDKDevTestForPythonVersion) UnmarshalJSON(bs []byte) error {
+func (r *PythonSDKDevPythonTest) UnmarshalJSON(bs []byte) error {
 	var id string
 	err := json.Unmarshal(bs, &id)
 	if err != nil {
 		return err
 	}
-	*r = PythonSDKDevTestForPythonVersion{query: selectNode(dag.query, id, "PythonSdkDevTestForPythonVersion")}
+	*r = PythonSDKDevPythonTest{query: selectNode(dag.query, id, "PythonSdkDevPythonTest")}
 	return nil
 }
 
 // Run the pytest command.
-func (r *PythonSDKDevTestForPythonVersion) Run(ctx context.Context, args []string) error {
+func (r *PythonSDKDevPythonTest) Run(ctx context.Context, args []string) error {
 	if r.run != nil {
 		return nil
 	}
@@ -588,8 +558,8 @@ func (r *PythonSDKDevTestForPythonVersion) Run(ctx context.Context, args []strin
 	return q.Execute(ctx)
 }
 
-// Run python slow tests
-func (r *PythonSDKDevTestForPythonVersion) Slow(ctx context.Context) error {
+// Run Python slow tests.
+func (r *PythonSDKDevPythonTest) Slow(ctx context.Context) error {
 	if r.slow != nil {
 		return nil
 	}
@@ -598,14 +568,109 @@ func (r *PythonSDKDevTestForPythonVersion) Slow(ctx context.Context) error {
 	return q.Execute(ctx)
 }
 
-// Run python unit tests
-func (r *PythonSDKDevTestForPythonVersion) Unit(ctx context.Context) error {
+// Run Python unit tests.
+func (r *PythonSDKDevPythonTest) Unit(ctx context.Context) error {
 	if r.unit != nil {
 		return nil
 	}
 	q := r.query.Select("unit")
 
 	return q.Execute(ctx)
+}
+
+// The Python version to test against
+func (r *PythonSDKDevPythonTest) Version(ctx context.Context) (string, error) {
+	if r.version != nil {
+		return *r.version, nil
+	}
+	q := r.query.Select("version")
+
+	var response string
+
+	q = q.Bind(&response)
+	return response, q.Execute(ctx)
+}
+
+// PythonTestMatrix is a reusable test matrix keyed by Python version.
+type PythonSDKDevPythonTestMatrix struct { // python-sdk-dev (../../../../:0:0)
+	query *querybuilder.Selection
+
+	id *ID
+}
+
+func (r *PythonSDKDevPythonTestMatrix) WithGraphQLQuery(q *querybuilder.Selection) *PythonSDKDevPythonTestMatrix {
+	return &PythonSDKDevPythonTestMatrix{
+		query: q,
+	}
+}
+
+// Get a test suite for one Python version.
+func (r *PythonSDKDevPythonTestMatrix) Get(version string) *PythonSDKDevPythonTest {
+	q := r.query.Select("get")
+	q = q.Arg("version", version)
+
+	return &PythonSDKDevPythonTest{
+		query: q,
+	}
+}
+
+// A unique identifier for this PythonSdkDevPythonTestMatrix.
+func (r *PythonSDKDevPythonTestMatrix) ID(ctx context.Context) (ID, error) {
+	if r.id != nil {
+		return *r.id, nil
+	}
+	q := r.query.Select("id")
+
+	var response ID
+
+	q = q.Bind(&response)
+	return response, q.Execute(ctx)
+}
+
+// XXX_GraphQLType is an internal function. It returns the native GraphQL type name
+func (r *PythonSDKDevPythonTestMatrix) XXX_GraphQLType() string {
+	return "PythonSdkDevPythonTestMatrix"
+}
+
+// XXX_GraphQLIDType is an internal function. It returns the native GraphQL type name for the ID of this object
+func (r *PythonSDKDevPythonTestMatrix) XXX_GraphQLIDType() string {
+	return "ID"
+}
+
+// XXX_GraphQLID is an internal function. It returns the underlying type ID
+func (r *PythonSDKDevPythonTestMatrix) XXX_GraphQLID(ctx context.Context) (string, error) {
+	id, err := r.ID(ctx)
+	if err != nil {
+		return "", err
+	}
+	return string(id), nil
+}
+
+func (r *PythonSDKDevPythonTestMatrix) MarshalJSON() ([]byte, error) {
+	id, err := r.ID(marshalCtx)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(id)
+}
+func (r *PythonSDKDevPythonTestMatrix) UnmarshalJSON(bs []byte) error {
+	var id string
+	err := json.Unmarshal(bs, &id)
+	if err != nil {
+		return err
+	}
+	*r = PythonSDKDevPythonTestMatrix{query: selectNode(dag.query, id, "PythonSdkDevPythonTestMatrix")}
+	return nil
+}
+
+// Python versions in this matrix
+func (r *PythonSDKDevPythonTestMatrix) Versions(ctx context.Context) ([]string, error) {
+	q := r.query.Select("versions")
+
+	var response []string
+
+	q = q.Bind(&response)
+	return response, q.Execute(ctx)
 }
 
 // PythonSDKDevOpts contains options for Query.PythonSDKDev
@@ -615,6 +680,10 @@ type PythonSDKDevOpts struct {
 
 	// Default: "sdk/python"
 	SourcePath string
+	// Python versions to test
+	//
+	// Default: ["3.14","3.13","3.12","3.11","3.10"]
+	PythonVersions []string
 	// A docker config file with credentials to install on clients.
 	ClientDockerConfig *Secret
 }
@@ -630,6 +699,10 @@ func (r *Query) PythonSDKDev(ws *Workspace, opts ...PythonSDKDevOpts) *PythonSDK
 		// `sourcePath` optional argument
 		if !querybuilder.IsZeroValue(opts[i].SourcePath) {
 			q = q.Arg("sourcePath", opts[i].SourcePath)
+		}
+		// `pythonVersions` optional argument
+		if !querybuilder.IsZeroValue(opts[i].PythonVersions) {
+			q = q.Arg("pythonVersions", opts[i].PythonVersions)
 		}
 		// `clientDockerConfig` optional argument
 		if !querybuilder.IsZeroValue(opts[i].ClientDockerConfig) {

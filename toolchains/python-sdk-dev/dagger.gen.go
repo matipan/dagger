@@ -115,7 +115,31 @@ func (r *Docs) UnmarshalJSON(bs []byte) error {
 	return nil
 }
 
-func (r TestForPythonVersion) MarshalJSON() ([]byte, error) {
+func (r PythonTestMatrix) MarshalJSON() ([]byte, error) {
+	var concrete struct {
+		Versions  []string
+		Container *dagger.Container
+	}
+	concrete.Versions = r.Versions
+	concrete.Container = r.Container
+	return json.Marshal(&concrete)
+}
+
+func (r *PythonTestMatrix) UnmarshalJSON(bs []byte) error {
+	var concrete struct {
+		Versions  []string
+		Container *dagger.Container
+	}
+	err := json.Unmarshal(bs, &concrete)
+	if err != nil {
+		return err
+	}
+	r.Versions = concrete.Versions
+	r.Container = concrete.Container
+	return nil
+}
+
+func (r PythonTest) MarshalJSON() ([]byte, error) {
 	var concrete struct {
 		Container *dagger.Container
 		Version   string
@@ -125,7 +149,7 @@ func (r TestForPythonVersion) MarshalJSON() ([]byte, error) {
 	return json.Marshal(&concrete)
 }
 
-func (r *TestForPythonVersion) UnmarshalJSON(bs []byte) error {
+func (r *PythonTest) UnmarshalJSON(bs []byte) error {
 	var concrete struct {
 		Container *dagger.Container
 		Version   string
@@ -403,41 +427,6 @@ func invoke(ctx context.Context, parentJSON []byte, parentName string, fnName st
 				}
 			}
 			return (*PythonSdkDev).Publish(&parent, token, version, url), nil
-		case "Python310":
-			var parent PythonSdkDev
-			err = json.Unmarshal(parentJSON, &parent)
-			if err != nil {
-				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
-			}
-			return (*PythonSdkDev).Python310(&parent), nil
-		case "Python311":
-			var parent PythonSdkDev
-			err = json.Unmarshal(parentJSON, &parent)
-			if err != nil {
-				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
-			}
-			return (*PythonSdkDev).Python311(&parent), nil
-		case "Python312":
-			var parent PythonSdkDev
-			err = json.Unmarshal(parentJSON, &parent)
-			if err != nil {
-				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
-			}
-			return (*PythonSdkDev).Python312(&parent), nil
-		case "Python313":
-			var parent PythonSdkDev
-			err = json.Unmarshal(parentJSON, &parent)
-			if err != nil {
-				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
-			}
-			return (*PythonSdkDev).Python313(&parent), nil
-		case "Python314":
-			var parent PythonSdkDev
-			err = json.Unmarshal(parentJSON, &parent)
-			if err != nil {
-				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
-			}
-			return (*PythonSdkDev).Python314(&parent), nil
 		case "Release":
 			var parent PythonSdkDev
 			err = json.Unmarshal(parentJSON, &parent)
@@ -508,6 +497,13 @@ func invoke(ctx context.Context, parentJSON []byte, parentName string, fnName st
 				}
 			}
 			return (*PythonSdkDev).TestPublish(&parent, token, version), nil
+		case "Tests":
+			var parent PythonSdkDev
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return (*PythonSdkDev).Tests(&parent), nil
 		case "Typecheck":
 			var parent PythonSdkDev
 			err = json.Unmarshal(parentJSON, &parent)
@@ -549,6 +545,13 @@ func invoke(ctx context.Context, parentJSON []byte, parentName string, fnName st
 					panic(fmt.Errorf("%s: %w", "failed to unmarshal input arg sourcePath", err))
 				}
 			}
+			var pythonVersions []string
+			if inputArgs["pythonVersions"] != nil {
+				err = json.Unmarshal([]byte(inputArgs["pythonVersions"]), &pythonVersions)
+				if err != nil {
+					panic(fmt.Errorf("%s: %w", "failed to unmarshal input arg pythonVersions", err))
+				}
+			}
 			var clientDockerConfig *dagger.Secret
 			if inputArgs["clientDockerConfig"] != nil {
 				err = json.Unmarshal([]byte(inputArgs["clientDockerConfig"]), &clientDockerConfig)
@@ -563,14 +566,14 @@ func invoke(ctx context.Context, parentJSON []byte, parentName string, fnName st
 					panic(fmt.Errorf("%s: %w", "failed to unmarshal input arg ws", err))
 				}
 			}
-			return New(workspaceDir, sourcePath, clientDockerConfig, ws), nil
+			return New(workspaceDir, sourcePath, pythonVersions, clientDockerConfig, ws)
 		default:
 			return nil, fmt.Errorf("unknown function %s", fnName)
 		}
-	case "TestForPythonVersion":
+	case "PythonTest":
 		switch fnName {
 		case "Run":
-			var parent TestForPythonVersion
+			var parent PythonTest
 			err = json.Unmarshal(parentJSON, &parent)
 			if err != nil {
 				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
@@ -582,21 +585,40 @@ func invoke(ctx context.Context, parentJSON []byte, parentName string, fnName st
 					panic(fmt.Errorf("%s: %w", "failed to unmarshal input arg args", err))
 				}
 			}
-			return nil, (*TestForPythonVersion).Run(&parent, ctx, args)
+			return nil, (*PythonTest).Run(&parent, ctx, args)
 		case "Slow":
-			var parent TestForPythonVersion
+			var parent PythonTest
 			err = json.Unmarshal(parentJSON, &parent)
 			if err != nil {
 				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
 			}
-			return nil, (*TestForPythonVersion).Slow(&parent, ctx)
+			return nil, (*PythonTest).Slow(&parent, ctx)
 		case "Unit":
-			var parent TestForPythonVersion
+			var parent PythonTest
 			err = json.Unmarshal(parentJSON, &parent)
 			if err != nil {
 				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
 			}
-			return nil, (*TestForPythonVersion).Unit(&parent, ctx)
+			return nil, (*PythonTest).Unit(&parent, ctx)
+		default:
+			return nil, fmt.Errorf("unknown function %s", fnName)
+		}
+	case "PythonTestMatrix":
+		switch fnName {
+		case "Get":
+			var parent PythonTestMatrix
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			var version string
+			if inputArgs["version"] != nil {
+				err = json.Unmarshal([]byte(inputArgs["version"]), &version)
+				if err != nil {
+					panic(fmt.Errorf("%s: %w", "failed to unmarshal input arg version", err))
+				}
+			}
+			return (*PythonTestMatrix).Get(&parent, version), nil
 		default:
 			return nil, fmt.Errorf("unknown function %s", fnName)
 		}
@@ -609,113 +631,93 @@ func invoke(ctx context.Context, parentJSON []byte, parentName string, fnName st
 						dag.Function("Build",
 							dag.TypeDef().WithObject("Container")).
 							WithDescription("Build the Python SDK client library package for distribution").
-							WithSourceMap(dag.SourceMap("main.go", 285, 1)).
-							WithArg("version", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind), dagger.FunctionWithArgOpts{Description: "The version for the distribution package", SourceMap: dag.SourceMap("main.go", 288, 2), DefaultValue: dagger.JSON("\"0.0.0\"")})).
+							WithSourceMap(dag.SourceMap("main.go", 259, 1)).
+							WithArg("version", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind), dagger.FunctionWithArgOpts{Description: "The version for the distribution package", SourceMap: dag.SourceMap("main.go", 262, 2), DefaultValue: dagger.JSON("\"0.0.0\"")})).
 					WithFunction(
 						dag.Function("ClientLibrary",
 							dag.TypeDef().WithObject("Changeset")).
 							WithDescription("Regenerate the core Python client library").
-							WithSourceMap(dag.SourceMap("main.go", 188, 1)).
+							WithSourceMap(dag.SourceMap("main.go", 162, 1)).
 							WithGenerator()).
 					WithFunction(
 						dag.Function("Docs",
 							dag.TypeDef().WithObject("Docs")).
 							WithDescription("Preview the reference documentation").
-							WithSourceMap(dag.SourceMap("main.go", 326, 1))).
+							WithSourceMap(dag.SourceMap("main.go", 300, 1))).
 					WithFunction(
 						dag.Function("Format",
 							dag.TypeDef().WithObject("Changeset")).
 							WithDescription("Format source files").
-							WithSourceMap(dag.SourceMap("main.go", 114, 1)).
+							WithSourceMap(dag.SourceMap("main.go", 119, 1)).
 							WithCheck().
-							WithArg("paths", dag.TypeDef().WithListOf(dag.TypeDef().WithKind(dagger.TypeDefKindStringKind)), dagger.FunctionWithArgOpts{Description: "List of files or directories to check", SourceMap: dag.SourceMap("main.go", 117, 2), DefaultValue: dagger.JSON("[]")})).
+							WithArg("paths", dag.TypeDef().WithListOf(dag.TypeDef().WithKind(dagger.TypeDefKindStringKind)), dagger.FunctionWithArgOpts{Description: "List of files or directories to check", SourceMap: dag.SourceMap("main.go", 122, 2), DefaultValue: dagger.JSON("[]")})).
 					WithFunction(
 						dag.Function("Lint",
 							dag.TypeDef().WithObject("Container")).
 							WithDescription("Check for linting errors").
-							WithSourceMap(dag.SourceMap("main.go", 102, 1)).
+							WithSourceMap(dag.SourceMap("main.go", 107, 1)).
 							WithCheck().
-							WithArg("paths", dag.TypeDef().WithListOf(dag.TypeDef().WithKind(dagger.TypeDefKindStringKind)), dagger.FunctionWithArgOpts{Description: "List of files or directories to check", SourceMap: dag.SourceMap("main.go", 105, 2), DefaultValue: dagger.JSON("[]")})).
+							WithArg("paths", dag.TypeDef().WithListOf(dag.TypeDef().WithKind(dagger.TypeDefKindStringKind)), dagger.FunctionWithArgOpts{Description: "List of files or directories to check", SourceMap: dag.SourceMap("main.go", 110, 2), DefaultValue: dagger.JSON("[]")})).
 					WithFunction(
 						dag.Function("LintDocsSnippets",
 							dag.TypeDef().WithObject("Container")).
 							WithDescription("Lint the Python snippets in the documentation").
-							WithSourceMap(dag.SourceMap("main.go", 86, 1)).
+							WithSourceMap(dag.SourceMap("main.go", 91, 1)).
 							WithCheck().
-							WithArg("workspace", dag.TypeDef().WithObject("Directory").WithOptional(true), dagger.FunctionWithArgOpts{SourceMap: dag.SourceMap("main.go", 94, 2), DefaultPath: "/", Ignore: []string{"*", "!docs/current_docs/**/*.py", "!docs/current_docs/**/.ruff.toml", "!.ruff.toml"}})).
+							WithArg("workspace", dag.TypeDef().WithObject("Directory").WithOptional(true), dagger.FunctionWithArgOpts{SourceMap: dag.SourceMap("main.go", 99, 2), DefaultPath: "/", Ignore: []string{"*", "!docs/current_docs/**/*.py", "!docs/current_docs/**/.ruff.toml", "!.ruff.toml"}})).
 					WithFunction(
 						dag.Function("Provision",
 							dag.TypeDef().WithObject("Container")).
-							WithSourceMap(dag.SourceMap("main.go", 332, 1)).
-							WithArg("cliBin", dag.TypeDef().WithObject("File"), dagger.FunctionWithArgOpts{Description: "Dagger binary to use for test", SourceMap: dag.SourceMap("main.go", 335, 2)}).
-							WithArg("runnerHost", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "_EXPERIMENTAL_DAGGER_RUNNER_HOST value", SourceMap: dag.SourceMap("main.go", 338, 2)})).
+							WithSourceMap(dag.SourceMap("main.go", 306, 1)).
+							WithArg("cliBin", dag.TypeDef().WithObject("File"), dagger.FunctionWithArgOpts{Description: "Dagger binary to use for test", SourceMap: dag.SourceMap("main.go", 309, 2)}).
+							WithArg("runnerHost", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "_EXPERIMENTAL_DAGGER_RUNNER_HOST value", SourceMap: dag.SourceMap("main.go", 312, 2)})).
 					WithFunction(
 						dag.Function("Publish",
 							dag.TypeDef().WithObject("Container")).
 							WithDescription("Publish Python SDK client library to PyPI").
-							WithSourceMap(dag.SourceMap("main.go", 297, 1)).
-							WithArg("token", dag.TypeDef().WithObject("Secret"), dagger.FunctionWithArgOpts{Description: "The token for the upload", SourceMap: dag.SourceMap("main.go", 299, 2)}).
-							WithArg("version", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind), dagger.FunctionWithArgOpts{Description: "The version for the distribution package to publish", SourceMap: dag.SourceMap("main.go", 302, 2), DefaultValue: dagger.JSON("\"0.0.0\"")}).
-							WithArg("url", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "The URL of the upload endpoint (empty means PyPI)", SourceMap: dag.SourceMap("main.go", 305, 2)})).
-					WithFunction(
-						dag.Function("Python310",
-							dag.TypeDef().WithObject("TestForPythonVersion")).
-							WithDescription("Test suite for python 3.10").
-							WithSourceMap(dag.SourceMap("main.go", 147, 1))).
-					WithFunction(
-						dag.Function("Python311",
-							dag.TypeDef().WithObject("TestForPythonVersion")).
-							WithDescription("Test suite for python 3.11").
-							WithSourceMap(dag.SourceMap("main.go", 155, 1))).
-					WithFunction(
-						dag.Function("Python312",
-							dag.TypeDef().WithObject("TestForPythonVersion")).
-							WithDescription("Test suite for python 3.12").
-							WithSourceMap(dag.SourceMap("main.go", 163, 1))).
-					WithFunction(
-						dag.Function("Python313",
-							dag.TypeDef().WithObject("TestForPythonVersion")).
-							WithDescription("Test suite for python 3.13").
-							WithSourceMap(dag.SourceMap("main.go", 171, 1))).
-					WithFunction(
-						dag.Function("Python314",
-							dag.TypeDef().WithObject("TestForPythonVersion")).
-							WithDescription("Test suite for python 3.14").
-							WithSourceMap(dag.SourceMap("main.go", 179, 1))).
+							WithSourceMap(dag.SourceMap("main.go", 271, 1)).
+							WithArg("token", dag.TypeDef().WithObject("Secret"), dagger.FunctionWithArgOpts{Description: "The token for the upload", SourceMap: dag.SourceMap("main.go", 273, 2)}).
+							WithArg("version", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind), dagger.FunctionWithArgOpts{Description: "The version for the distribution package to publish", SourceMap: dag.SourceMap("main.go", 276, 2), DefaultValue: dagger.JSON("\"0.0.0\"")}).
+							WithArg("url", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "The URL of the upload endpoint (empty means PyPI)", SourceMap: dag.SourceMap("main.go", 279, 2)})).
 					WithFunction(
 						dag.Function("Release",
 							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
 							WithDescription("Release the Python SDK").
-							WithSourceMap(dag.SourceMap("main.go", 246, 1)).
-							WithArg("sourceTag", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind), dagger.FunctionWithArgOpts{Description: "Git tag to release from", SourceMap: dag.SourceMap("main.go", 250, 2)}).
-							WithArg("dryRun", dag.TypeDef().WithKind(dagger.TypeDefKindBooleanKind).WithOptional(true), dagger.FunctionWithArgOpts{SourceMap: dag.SourceMap("main.go", 253, 2)}).
-							WithArg("pypiRepo", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{SourceMap: dag.SourceMap("main.go", 256, 2)}).
-							WithArg("pypiURL", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{SourceMap: dag.SourceMap("main.go", 259, 2)}).
-							WithArg("pypiToken", dag.TypeDef().WithObject("Secret").WithOptional(true), dagger.FunctionWithArgOpts{SourceMap: dag.SourceMap("main.go", 262, 2)})).
+							WithSourceMap(dag.SourceMap("main.go", 220, 1)).
+							WithArg("sourceTag", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind), dagger.FunctionWithArgOpts{Description: "Git tag to release from", SourceMap: dag.SourceMap("main.go", 224, 2)}).
+							WithArg("dryRun", dag.TypeDef().WithKind(dagger.TypeDefKindBooleanKind).WithOptional(true), dagger.FunctionWithArgOpts{SourceMap: dag.SourceMap("main.go", 227, 2)}).
+							WithArg("pypiRepo", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{SourceMap: dag.SourceMap("main.go", 230, 2)}).
+							WithArg("pypiURL", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{SourceMap: dag.SourceMap("main.go", 233, 2)}).
+							WithArg("pypiToken", dag.TypeDef().WithObject("Secret").WithOptional(true), dagger.FunctionWithArgOpts{SourceMap: dag.SourceMap("main.go", 236, 2)})).
 					WithFunction(
 						dag.Function("ReleaseDryRun",
 							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
 							WithDescription("Test the publishing process").
-							WithSourceMap(dag.SourceMap("main.go", 234, 1)).
+							WithSourceMap(dag.SourceMap("main.go", 208, 1)).
 							WithCheck()).
 					WithFunction(
 						dag.Function("TestPublish",
 							dag.TypeDef().WithObject("Container")).
 							WithDescription("Test the publishing of the Python SDK client library to TestPyPI").
-							WithSourceMap(dag.SourceMap("main.go", 315, 1)).
-							WithArg("token", dag.TypeDef().WithObject("Secret"), dagger.FunctionWithArgOpts{Description: "TestPyPI token", SourceMap: dag.SourceMap("main.go", 317, 2)}).
-							WithArg("version", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind), dagger.FunctionWithArgOpts{Description: "The version for the distribution package to publish", SourceMap: dag.SourceMap("main.go", 320, 2), DefaultValue: dagger.JSON("\"0.0.0\"")})).
+							WithSourceMap(dag.SourceMap("main.go", 289, 1)).
+							WithArg("token", dag.TypeDef().WithObject("Secret"), dagger.FunctionWithArgOpts{Description: "TestPyPI token", SourceMap: dag.SourceMap("main.go", 291, 2)}).
+							WithArg("version", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind), dagger.FunctionWithArgOpts{Description: "The version for the distribution package to publish", SourceMap: dag.SourceMap("main.go", 294, 2), DefaultValue: dagger.JSON("\"0.0.0\"")})).
+					WithFunction(
+						dag.Function("Tests",
+							dag.TypeDef().WithObject("PythonTestMatrix")).
+							WithDescription("Tests returns the test matrix keyed by Python version.\n\nA collection is used because versions are homogeneous data, not distinct\nschema roles. This lets another Python project supply its own version set\nwithout adding one field or function for each version.").
+							WithSourceMap(dag.SourceMap("main.go", 156, 1))).
 					WithFunction(
 						dag.Function("Typecheck",
 							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
 							WithDescription("Run the type checker (mypy)\nFIXME: this is not included as an automated check. Should it?").
-							WithSourceMap(dag.SourceMap("main.go", 129, 1))).
+							WithSourceMap(dag.SourceMap("main.go", 134, 1))).
 					WithFunction(
 						dag.Function("WithDirectory",
 							dag.TypeDef().WithObject("PythonSdkDev")).
 							WithDescription("Mount a directory on the base container").
-							WithSourceMap(dag.SourceMap("main.go", 138, 1)).
-							WithArg("source", dag.TypeDef().WithObject("Directory"), dagger.FunctionWithArgOpts{Description: "The directory to add", SourceMap: dag.SourceMap("main.go", 140, 2)})).
+							WithSourceMap(dag.SourceMap("main.go", 143, 1)).
+							WithArg("source", dag.TypeDef().WithObject("Directory"), dagger.FunctionWithArgOpts{Description: "The directory to add", SourceMap: dag.SourceMap("main.go", 145, 2)})).
 					WithField("DevContainer", dag.TypeDef().WithObject("Container"), dagger.TypeDefWithFieldOpts{Description: "Python container to develop Python SDK", SourceMap: dag.SourceMap("main.go", 17, 2)}).
 					WithField("Workspace", dag.TypeDef().WithObject("Directory"), dagger.TypeDefWithFieldOpts{SourceMap: dag.SourceMap("main.go", 18, 2)}).
 					WithField("SourcePath", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind), dagger.TypeDefWithFieldOpts{SourceMap: dag.SourceMap("main.go", 19, 2)}).
@@ -726,8 +728,9 @@ func invoke(ctx context.Context, parentJSON []byte, parentName string, fnName st
 							WithSourceMap(dag.SourceMap("main.go", 26, 1)).
 							WithArg("workspaceDir", dag.TypeDef().WithObject("Directory").WithOptional(true), dagger.FunctionWithArgOpts{Description: "A workspace containing the SDK source code and other relevant files", SourceMap: dag.SourceMap("main.go", 47, 2), DefaultPath: "/", Ignore: []string{"*", "!sdk/python/*.toml", "!sdk/python/*.lock", "!sdk/python/*/*.toml", "!sdk/python/*/*.lock", "!sdk/python/.python-version", "!sdk/python/dev/src/**/*.py", "!sdk/python/docs/**/*.py", "!sdk/python/docs/**/*.rst", "!sdk/python/runtime/images", "!sdk/python/src/**/*.py", "!sdk/python/src/**/py.typed", "!sdk/python/tests/**/*.py", "!sdk/python/codegen/**/*.py", "!sdk/python/README.md", "!sdk/python/LICENSE"}}).
 							WithArg("sourcePath", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind), dagger.FunctionWithArgOpts{SourceMap: dag.SourceMap("main.go", 50, 2), DefaultValue: dagger.JSON("\"sdk/python\"")}).
-							WithArg("clientDockerConfig", dag.TypeDef().WithObject("Secret").WithOptional(true), dagger.FunctionWithArgOpts{Description: "A docker config file with credentials to install on clients.", SourceMap: dag.SourceMap("main.go", 53, 2)}).
-							WithArg("ws", dag.TypeDef().WithObject("Workspace"), dagger.FunctionWithArgOpts{Description: "Workspace forwarded to engine-dev for VCS stamping. Auto-injected on a\ndirect call; dependencies don't inherit it, so callers must forward it.", SourceMap: dag.SourceMap("main.go", 56, 2)}))).
+							WithArg("pythonVersions", dag.TypeDef().WithListOf(dag.TypeDef().WithKind(dagger.TypeDefKindStringKind)), dagger.FunctionWithArgOpts{Description: "Python versions to test", SourceMap: dag.SourceMap("main.go", 53, 2), DefaultValue: dagger.JSON("[\"3.14\",\"3.13\",\"3.12\",\"3.11\",\"3.10\"]")}).
+							WithArg("clientDockerConfig", dag.TypeDef().WithObject("Secret").WithOptional(true), dagger.FunctionWithArgOpts{Description: "A docker config file with credentials to install on clients.", SourceMap: dag.SourceMap("main.go", 56, 2)}).
+							WithArg("ws", dag.TypeDef().WithObject("Workspace"), dagger.FunctionWithArgOpts{Description: "Workspace forwarded to engine-dev for VCS stamping. Auto-injected on a\ndirect call; dependencies don't inherit it, so callers must forward it.", SourceMap: dag.SourceMap("main.go", 59, 2)}))).
 			WithObject(
 				dag.TypeDef().WithObject("Docs", dagger.TypeDefWithObjectOpts{SourceMap: dag.SourceMap("docs.go", 9, 6)}).
 					WithFunction(
@@ -742,25 +745,38 @@ func invoke(ctx context.Context, parentJSON []byte, parentName string, fnName st
 							WithSourceMap(dag.SourceMap("docs.go", 25, 1)).
 							WithArg("bind", dag.TypeDef().WithKind(dagger.TypeDefKindIntegerKind), dagger.FunctionWithArgOpts{Description: "The port to bind the web preview for the built docs", SourceMap: dag.SourceMap("docs.go", 28, 2), DefaultValue: dagger.JSON("8000")}))).
 			WithObject(
-				dag.TypeDef().WithObject("TestForPythonVersion", dagger.TypeDefWithObjectOpts{SourceMap: dag.SourceMap("test.go", 9, 6)}).
+				dag.TypeDef().WithObject("PythonTestMatrix", dagger.TypeDefWithObjectOpts{Description: "PythonTestMatrix is a reusable test matrix keyed by Python version.", SourceMap: dag.SourceMap("test.go", 11, 6)}).
+					WithCollection().
+					WithFunction(
+						dag.Function("Get",
+							dag.TypeDef().WithObject("PythonTest")).
+							WithDescription("Get a test suite for one Python version.").
+							WithSourceMap(dag.SourceMap("test.go", 30, 1)).
+							WithArg("version", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind), dagger.FunctionWithArgOpts{SourceMap: dag.SourceMap("test.go", 30, 37)})).
+					WithField("Versions", dag.TypeDef().WithListOf(dag.TypeDef().WithKind(dagger.TypeDefKindStringKind)), dagger.TypeDefWithFieldOpts{Description: "Python versions in this matrix", SourceMap: dag.SourceMap("test.go", 14, 2)}).
+					WithCollectionKeys("Versions").
+					WithCollectionGet("Get")).
+			WithObject(
+				dag.TypeDef().WithObject("PythonTest", dagger.TypeDefWithObjectOpts{Description: "PythonTest runs a project's tests with one Python version.", SourceMap: dag.SourceMap("test.go", 38, 6)}).
 					WithFunction(
 						dag.Function("Run",
 							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
 							WithDescription("Run the pytest command.").
-							WithSourceMap(dag.SourceMap("test.go", 31, 1)).
-							WithArg("args", dag.TypeDef().WithListOf(dag.TypeDef().WithKind(dagger.TypeDefKindStringKind)), dagger.FunctionWithArgOpts{Description: "Arguments to pass to pytest", SourceMap: dag.SourceMap("test.go", 34, 2)})).
+							WithSourceMap(dag.SourceMap("test.go", 59, 1)).
+							WithArg("args", dag.TypeDef().WithListOf(dag.TypeDef().WithKind(dagger.TypeDefKindStringKind)), dagger.FunctionWithArgOpts{Description: "Arguments to pass to pytest", SourceMap: dag.SourceMap("test.go", 62, 2)})).
 					WithFunction(
 						dag.Function("Slow",
 							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
-							WithDescription("Run python slow tests").
-							WithSourceMap(dag.SourceMap("test.go", 20, 1)).
+							WithDescription("Run Python slow tests.").
+							WithSourceMap(dag.SourceMap("test.go", 48, 1)).
 							WithCheck()).
 					WithFunction(
 						dag.Function("Unit",
 							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
-							WithDescription("Run python unit tests").
-							WithSourceMap(dag.SourceMap("test.go", 26, 1)).
-							WithCheck())), nil
+							WithDescription("Run Python unit tests.").
+							WithSourceMap(dag.SourceMap("test.go", 54, 1)).
+							WithCheck()).
+					WithField("Version", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind), dagger.TypeDefWithFieldOpts{Description: "The Python version to test against", SourceMap: dag.SourceMap("test.go", 43, 2)})), nil
 	default:
 		return nil, fmt.Errorf("unknown object %s", parentName)
 	}

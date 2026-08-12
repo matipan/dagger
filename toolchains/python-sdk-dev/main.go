@@ -48,13 +48,20 @@ func New(
 
 	// +default="sdk/python"
 	sourcePath string,
+	// Python versions to test
+	// +default=["3.14", "3.13", "3.12", "3.11", "3.10"]
+	pythonVersions []string,
 	// A docker config file with credentials to install on clients.
 	// +optional
 	clientDockerConfig *dagger.Secret,
 	// Workspace forwarded to engine-dev for VCS stamping. Auto-injected on a
 	// direct call; dependencies don't inherit it, so callers must forward it.
 	ws *dagger.Workspace,
-) *PythonSdkDev {
+) (*PythonSdkDev, error) {
+	if err := validatePythonVersions(pythonVersions); err != nil {
+		return nil, err
+	}
+
 	return &PythonSdkDev{
 		DevContainer: dag.DaggerEngine(dagger.DaggerEngineOpts{
 			ClientDockerConfig: clientDockerConfig,
@@ -74,12 +81,10 @@ func New(
 				WithExec(uv("sync"))),
 		Workspace:         workspaceDir,
 		SourcePath:        sourcePath,
-		SupportedVersions: supportedVersions,
+		SupportedVersions: append([]string(nil), pythonVersions...),
 		Ws:                ws,
-	}
+	}, nil
 }
-
-var supportedVersions = []string{"3.14", "3.13", "3.12", "3.11", "3.10"}
 
 // Lint the Python snippets in the documentation
 // +check
@@ -143,44 +148,13 @@ func (t PythonSdkDev) WithDirectory(
 	return t
 }
 
-// Test suite for python 3.10
-func (t PythonSdkDev) Python310() *TestForPythonVersion {
-	return &TestForPythonVersion{
-		Container: t.DevContainer,
-		Version:   "3.10",
-	}
-}
-
-// Test suite for python 3.11
-func (t PythonSdkDev) Python311() *TestForPythonVersion {
-	return &TestForPythonVersion{
-		Container: t.DevContainer,
-		Version:   "3.11",
-	}
-}
-
-// Test suite for python 3.12
-func (t PythonSdkDev) Python312() *TestForPythonVersion {
-	return &TestForPythonVersion{
-		Container: t.DevContainer,
-		Version:   "3.12",
-	}
-}
-
-// Test suite for python 3.13
-func (t PythonSdkDev) Python313() *TestForPythonVersion {
-	return &TestForPythonVersion{
-		Container: t.DevContainer,
-		Version:   "3.13",
-	}
-}
-
-// Test suite for python 3.14
-func (t PythonSdkDev) Python314() *TestForPythonVersion {
-	return &TestForPythonVersion{
-		Container: t.DevContainer,
-		Version:   "3.14",
-	}
+// Tests returns the test matrix keyed by Python version.
+//
+// A collection is used because versions are homogeneous data, not distinct
+// schema roles. This lets another Python project supply its own version set
+// without adding one field or function for each version.
+func (t PythonSdkDev) Tests() *PythonTestMatrix {
+	return newPythonTestMatrix(t.DevContainer, t.SupportedVersions)
 }
 
 // Regenerate the core Python client library
