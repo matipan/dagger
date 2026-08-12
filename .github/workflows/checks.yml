@@ -8,7 +8,6 @@ name: Checks
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   checks:
@@ -92,16 +91,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .env
-        run: mv .env.gha .env
-
-      - name: Install Dagger
-        env:
-          DAGGER_VERSION: v1.0.0-beta.8
-        run: |
-          curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=/usr/local/bin sudo -E sh
-
       - name: Check
-        env:
-          DAGGER_CLOUD_TOKEN: oidc
-        run: dagger --cloud check --require-load ${{ matrix.args }}
+        uses: dagger/dagger-for-github@v8.3.0
+        with:
+          # Run the CLI and engine built from the revision under test. This CI
+          # is a golden example for the same Modules v2 implementation.
+          commit: ${{ github.sha }}
+          verb: check
+          args: --require-load ${{ matrix.args }}
+          cloud-token: dag_dagger_sBIv6DsjNerWvTqt2bSFeigBUqWxp9bhh3ONSSgeFnw
