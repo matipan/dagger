@@ -52,11 +52,11 @@ jobs:
           # Language matrices remain independently selectable artifacts. A
           # selector without a coordinate expands to all items in that matrix.
           - name: Go modules
-            args: go-module:**
+            args: golang-module:**
           - name: Python SDK
-            args: python-sdk:**
+            args: python-sdk:** python-sdk-python-test:**
           - name: TypeScript SDK
-            args: typescript-sdk:**
+            args: typescript-sdk:** typescript-sdk-runtime-test:**
           - name: Go SDK
             args: go-sdk:**
           - name: PHP SDK
@@ -74,7 +74,7 @@ jobs:
           # migration: they can adopt richer artifact fields or collections
           # without changing this workflow's execution model.
           - name: project checks
-            args: "'**:**' --skip go-module:** --skip '*sdk:**' --skip test-split-test-group:** --skip ci:**"
+            args: "'**:**' --skip golang-module:** --skip golang-test:** --skip golang-package:** --skip '*sdk:**' --skip python-sdk-python-test:** --skip typescript-sdk-runtime-test:** --skip test-split-test-group:** --skip ci:**"
 
           # Generated output is one explicit Plan shard. It uses the same
           # selectors and execution engine as normal checks, but only compiles
