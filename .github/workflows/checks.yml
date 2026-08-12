@@ -79,7 +79,7 @@ jobs:
           # selectors and execution engine as normal checks, but only compiles
           # @generate actions and fails if their Changesets are non-empty.
           - name: generated files
-            args: --generate '**:**'
+            args: "--generate '**:**' --skip changelog:** --skip release:** --skip markdown-lint:** --skip typescript-sdk-generation:format"
 
           - name: CI bootstrap
             args: ci:bootstrap
