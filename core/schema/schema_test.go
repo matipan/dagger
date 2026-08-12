@@ -505,6 +505,66 @@ func TestExpandTypeDefClosureSkipsOptionalDuplicateOfCanonicalType(t *testing.T)
 	require.Same(t, canonical.Self(), expanded[0].Self())
 }
 
+func TestExpandTypeDefClosureNormalizesOptionalTypeWithDetachedNestedResult(t *testing.T) {
+	ctx := context.Background()
+	baseCache, err := dagql.NewCache(ctx, "", nil, nil)
+	require.NoError(t, err)
+	ctx = dagql.ContextWithCache(ctx, baseCache)
+	ctx = engine.ContextWithClientMetadata(ctx, &engine.ClientMetadata{
+		ClientID:  "typedef-closure-optional-client",
+		SessionID: "typedef-closure-optional-session",
+	})
+	srv := &currentTypeDefsTestServer{}
+	root := core.NewRoot(srv)
+	coreSchemaBase, err := NewCoreSchemaBase(ctx, srv)
+	require.NoError(t, err)
+	dag, err := coreSchemaBase.Fork(ctx, root, "")
+	require.NoError(t, err)
+
+	canonical, err := core.SelectTypeDefWithServer(ctx, dag, dagql.Selector{
+		Field: "withKind",
+		Args:  []dagql.NamedInput{{Name: "kind", Value: core.TypeDefKindString}},
+	})
+	require.NoError(t, err)
+
+	var optional dagql.ObjectResult[*core.TypeDef]
+	err = dag.Select(ctx, canonical, &optional, dagql.Selector{
+		Field: "withOptional",
+		Args:  []dagql.NamedInput{{Name: "optional", Value: dagql.Boolean(true)}},
+	})
+	require.NoError(t, err)
+
+	unattachedReceiver := &dagql.ResultCall{
+		Kind:        dagql.ResultCallKindSynthetic,
+		SyntheticOp: "unattached-nested-typedef-receiver",
+		Type:        dagql.NewResultCallType((&core.TypeDef{}).Type()),
+	}
+	detachedList, err := dagql.NewObjectResultForCall(
+		&core.ListTypeDef{},
+		dag,
+		&dagql.ResultCall{
+			Kind:  dagql.ResultCallKindField,
+			Field: "asList",
+			Type:  dagql.NewResultCallType((&core.ListTypeDef{}).Type()),
+			Receiver: &dagql.ResultCallRef{
+				Call: unattachedReceiver,
+			},
+		},
+	)
+	require.NoError(t, err)
+	optional.Self().AsList = dagql.NonNull(detachedList)
+
+	expanded, err := expandTypeDefClosure(
+		ctx,
+		dag,
+		dagql.ObjectResultArray[*core.TypeDef]{optional},
+	)
+	require.NoError(t, err)
+	require.Len(t, expanded, 1)
+	require.False(t, expanded[0].Self().Optional)
+	require.Equal(t, core.TypeDefKindString, expanded[0].Self().Kind)
+}
+
 func TestCurrentTypeDefsReturnAllTypesAfterSessionRelease(t *testing.T) {
 	baseCtx := context.Background()
 	baseCache, err := dagql.NewCache(baseCtx, "", nil, nil)

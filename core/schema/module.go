@@ -2428,13 +2428,15 @@ func normalizeReturnAllTypesTypeDef(
 	if typeDef.Self() == nil || !typeDef.Self().Optional {
 		return typeDef, nil
 	}
-	if err := dag.Select(ctx, typeDef, &typeDef, dagql.Selector{
-		Field: "withOptional",
-		Args:  []dagql.NamedInput{{Name: "optional", Value: dagql.Boolean(false)}},
-	}); err != nil {
-		return typeDef, fmt.Errorf("normalize typedef optional=false: %w", err)
-	}
-	return typeDef, nil
+	return dagql.NewObjectResultForCall(
+		typeDef.Self().WithOptional(false),
+		dag,
+		&dagql.ResultCall{
+			Kind:        dagql.ResultCallKindSynthetic,
+			SyntheticOp: "normalize-typedef:" + typeDef.Self().Name,
+			Type:        dagql.NewResultCallType((&core.TypeDef{}).Type()),
+		},
+	)
 }
 
 func typeDefIsStub(typeDef *core.TypeDef) bool {
