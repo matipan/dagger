@@ -139,7 +139,7 @@ func (ChecksSuite) TestGenerateAsChecks(ctx context.Context, t *testctx.T) {
 		daggerExecFail("check", "--generate", "hello-with-generate-checks:non-empty-generate"),
 	).CombinedOutput(ctx)
 	require.NoError(t, err)
-	require.Contains(t, out, "generated files are out of date")
+	require.Contains(t, out, "produced changes")
 }
 
 func (ChecksSuite) TestChecksNoMatch(ctx context.Context, t *testctx.T) {
