@@ -98,7 +98,7 @@ legacy-default-path = true
 # settings.sourcePath = ""
 
 [modules.golang]
-source = "github.com/dagger/go@5683fb4f7e2e909a453eba727fb982077d5d11b5"
+source = "github.com/matipan/go-module@f49691b6771ca7ff612a6df1a0f46b98783d83e9"
 legacy-default-path = true
 
 [modules.golang.settings]

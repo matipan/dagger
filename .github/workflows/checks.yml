@@ -1,67 +1,107 @@
 name: Checks
+
 "on":
   push:
     branches:
-      #- main
       - releases/**
-  # commeting to enable native-ci
-  #pull_request:
-  #types:
-  #- opened
-  #- reopened
-  #- synchronize
-  #- ready_for_review
   workflow_dispatch: {}
+
 permissions:
   contents: read
+  id-token: write
+
 jobs:
   checks:
+    name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
-        filter:
-          - "go/**"
-          - "helm/**"
-          - "security/**"
-          - "docs/**"
-          - "installers/**"
-          - "test-split/test-base"
-          - "test-split/test-cgroups"
-          - "test-split/test-call-and-shell"
-          - "test-split/test-cli-engine"
-          - "test-split/test-client-generator"
-          - "test-split/test-container"
-          - "test-split/test-interface"
-          - "test-split/test-llm"
-          - "test-split/test-module-runtimes"
-          - "test-split/test-modules"
-          - "engine-dev/**"
-          - "go-sdk/**"
-          - "python-sdk/**"
-          - "typescript-sdk/**"
-          - "php-sdk/**"
-          - "java-sdk/**"
-          - "dotnet-sdk/**"
-          - "rust-sdk/**"
-          # - "elixir-sdk/**"
-          - "cli/**"
-          - "check-generated"
-          - "ci/**"
+        include:
+          # Keep expensive integration groups as separate artifact coordinates.
+          # Each job selects one collection item, so Dagger runs the normal item
+          # implementation rather than serializing the groups into one batch.
+          - name: engine / base
+            args: --test-split-test-group=base test-split-test-group:test
+          - name: engine / provision
+            args: --test-split-test-group=provision test-split-test-group:test
+          - name: engine / telemetry
+            args: --test-split-test-group=telemetry test-split-test-group:test
+          - name: engine / call and shell
+            args: --test-split-test-group=call-and-shell test-split-test-group:test
+          - name: engine / CLI and engine
+            args: --test-split-test-group=cli-engine test-split-test-group:test
+          - name: engine / cache persistence
+            args: --test-split-test-group=cache-persistence test-split-test-group:test
+          - name: engine / local cache
+            args: --test-split-test-group=local-cache test-split-test-group:test
+          - name: engine / client generator
+            args: --test-split-test-group=client-generator test-split-test-group:test
+          - name: engine / container
+            args: --test-split-test-group=container test-split-test-group:test
+          - name: engine / interface
+            args: --test-split-test-group=interface test-split-test-group:test
+          - name: engine / LLM
+            args: --test-split-test-group=llm test-split-test-group:test
+          - name: engine / module runtimes
+            args: --test-split-test-group=module-runtimes test-split-test-group:test
+          - name: engine / modules
+            args: --test-split-test-group=modules test-split-test-group:test
+          - name: engine / workspaces
+            args: --test-split-test-group=workspaces test-split-test-group:test
+
+          # Language matrices remain independently selectable artifacts. A
+          # selector without a coordinate expands to all items in that matrix.
+          - name: Go modules
+            args: go-module:**
+          - name: Python SDK
+            args: python-sdk:**
+          - name: TypeScript SDK
+            args: typescript-sdk:**
+          - name: Go SDK
+            args: go-sdk:**
+          - name: PHP SDK
+            args: php-sdk:**
+          - name: Java SDK
+            args: java-sdk:**
+          - name: Dotnet SDK
+            args: dotnet-sdk:**
+          - name: Rust SDK
+            args: rust-sdk:**
+          - name: Elixir SDK
+            args: elixir-sdk:**
+
+          # Other modules retain their semantic action names. This is a staged
+          # migration: they can adopt richer artifact fields or collections
+          # without changing this workflow's execution model.
+          - name: project checks
+            args: "'**:**' --skip go-module:** --skip '*sdk:**' --skip test-split-test-group:** --skip ci:**"
+
+          # Generated output is one explicit Plan shard. It uses the same
+          # selectors and execution engine as normal checks, but only compiles
+          # @generate actions and fails if their Changesets are non-empty.
+          - name: generated files
+            args: --generate '**:**'
+
+          - name: CI bootstrap
+            args: ci:bootstrap
+
     runs-on:
       - ${{ github.repository == 'dagger/dagger' && 'nscloud-ubuntu-24.04-amd64-16x32' || 'ubuntu-24.04' }}
-    name: checks
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Setup .env
         run: mv .env.gha .env
-      - name: exec
-        id: exec
-        uses: dagger/checks@main
-        with:
-          filter: ${{ matrix.filter }}
-          cloud-token: dag_dagger_sBIv6DsjNerWvTqt2bSFeigBUqWxp9bhh3ONSSgeFnw
-          # Pinned from dagger/dagger#main, to enable checks.
-          # Once checks are merged and stable, we can switch back to a stable release
-          commit: 0772a9cfc97916c3c8c971966163bfa22bb9585e
-    timeout-minutes: 30
+
+      - name: Install Dagger
+        env:
+          DAGGER_VERSION: v1.0.0-beta.8
+        run: |
+          curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=/usr/local/bin sudo -E sh
+
+      - name: Check
+        env:
+          DAGGER_CLOUD_TOKEN: oidc
+        run: dagger --cloud check --require-load ${{ matrix.args }}
